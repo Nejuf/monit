@@ -368,7 +368,7 @@ static void do_foot(HttpResponse res) {
         StringBuffer_append(res->outputbuffer,
                             "</center></div></div>"
                             "<div id='footer'>"
-                            "Copyright &copy; 2001-2015 Tildeslash. All rights reserved. "
+                            " "
                             "<span style='margin-left:5px;'></span>"
                             "</div></body></html>");
 }
@@ -382,7 +382,7 @@ static void do_home(HttpRequest req, HttpResponse res) {
                             "<table id='header' width='100%%'>"
                             " <tr>"
                             "  <td colspan=2 valign='top' align='left' width='100%%'>"
-                            "  <h1>Monit Service Manager</h1>"
+                            "  <h1>System Status</h1>"
                             "  <p align='center'>Monit is <a href='_runtime'>running</a> on %s with <i>uptime, %s</i> and monitoring:</p><br>"
                             "  </td>"
                             " </tr>"
