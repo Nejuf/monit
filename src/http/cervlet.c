@@ -355,8 +355,8 @@ static void do_head(HttpResponse res, const char *path, const char *name, int re
                             "<table id='nav' width='100%%'>"\
                             "  <tr>"\
                             "    <td width='20%%'><a href='.'>Home</a>&nbsp;&gt;&nbsp;<a href='%s'>%s</a></td>"\
-                            "    <td width='60%%' style='text-align:center;'>Use <a href='http://mmonit.com/'>M/Monit</a> to manage all your Monit instances</td>"\
-                            "    <td width='20%%'><p align='right'><a href='_about'>Monit %s</a></td>"\
+                            "    <td width='60%%' style='text-align:center;'></td>"\
+                            "    <td width='20%%'><p align='right'>Monit %s</td>"\
                             "  </tr>"\
                             "</table>"\
                             "<center>",
@@ -368,11 +368,8 @@ static void do_foot(HttpResponse res) {
         StringBuffer_append(res->outputbuffer,
                             "</center></div></div>"
                             "<div id='footer'>"
-                            "Copyright &copy; 2001-2015 <a href=\"http://tildeslash.com/\">Tildeslash</a>. All rights reserved. "
+                            "Copyright &copy; 2001-2015 Tildeslash. All rights reserved. "
                             "<span style='margin-left:5px;'></span>"
-                            "<a href=\"http://mmonit.com/monit/\">Monit web site</a> | "
-                            "<a href=\"http://mmonit.com/wiki/\">Monit Wiki</a> | "
-                            "<a href=\"http://mmonit.com/\">M/Monit</a>"
                             "</div></body></html>");
 }
 
@@ -410,13 +407,13 @@ static void do_home(HttpRequest req, HttpResponse res) {
 static void do_about(HttpRequest req, HttpResponse res) {
         StringBuffer_append(res->outputbuffer,
                             "<html><head><title>about monit</title></head><body bgcolor=white>"
-                            "<br><h1><center><a href='http://mmonit.com/monit/'>"
-                            "monit " VERSION "</a></center></h1>");
+                            "<br><h1><center>"
+                            "monit " VERSION "</center></h1>");
         StringBuffer_append(res->outputbuffer,
                             "<ul>"
-                            "<li style='padding-bottom:10px;'>Copyright &copy; 2001-2015 <a "
-                            "href='http://tildeslash.com/'>Tildeslash Ltd"
-                            "</a>. All Rights Reserved.</li></ul>");
+                            "<li style='padding-bottom:10px;'>Copyright &copy; 2001-2015 "
+                            "Tildeslash Ltd"
+                            "All Rights Reserved.</li></ul>");
         StringBuffer_append(res->outputbuffer, "<hr size='1'>");
         StringBuffer_append(res->outputbuffer,
                             "<p>This program is free software; you can redistribute it and/or "
@@ -424,7 +421,6 @@ static void do_about(HttpRequest req, HttpResponse res) {
                             "<p>This program is distributed in the hope that it will be useful, but "
                             "WITHOUT ANY WARRANTY; without even the implied warranty of "
                             "MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the "
-                            "<a href='http://www.gnu.org/licenses/agpl.html'>"
                             "GNU AFFERO GENERAL PUBLIC LICENSE</a> for more details.</p>");
         StringBuffer_append(res->outputbuffer,
                             "<center><p style='padding-top:20px;'>[<a href='.'>Back to Monit</a>]</p></body></html>");
