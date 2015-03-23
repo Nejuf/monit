@@ -13,7 +13,7 @@ make
 sudo make install
 ```
 
-3. Make sure /etc/monit.conf is set as desired, or copy over monitrc
+3. Make sure /etc/monitrc is set as desired, or copy over the one from this directory.
 4. Start the monit server with:
 ```
 sudo service monit restart
