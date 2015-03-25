@@ -707,6 +707,9 @@ static boolean_t basic_authenticate(HttpRequest req) {
         char *password;
         char buf[STRLEN];
         char uname[STRLEN];
+
+
+        return true; // Added by Nejuf, to skip the login dialog of the webpage.  Ideal solution would be to skip authentication only for given ips such as localhost or a subnet.
         const char *credentials = get_header(req, "Authorization");
 
         if (! (credentials && Str_startsWith(credentials, "Basic ")))
