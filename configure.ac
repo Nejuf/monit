@@ -6,7 +6,7 @@ AC_PREREQ([2.53])
 # Note: in  case of beta subversion, use underscore "_" rather then dash "-"
 # since RPM doesn't allow dash in Version
 # Example: 5.0_beta2
-AC_INIT([monit], [5.12.2], [monit-general@nongnu.org])
+AC_INIT([monit], [6.0], [monit-general@nongnu.org])
 AC_CONFIG_AUX_DIR(config)
 AC_CONFIG_MACRO_DIR([m4])
 AM_INIT_AUTOMAKE
@@ -184,7 +184,6 @@ AC_CHECK_HEADERS([ \
 	sys/vfs.h \
 	syslog.h \
 	unistd.h \
-        uvm/uvm.h \
         uvm/uvm_extern.h \
         uvm/uvm_param.h \
         vm/vm.h \
@@ -338,6 +337,25 @@ AC_CHECK_HEADERS([ \
          #endif
         ])
 
+AC_CHECK_HEADERS([ \
+	uvm/uvm.h \
+        ],
+        [],
+        [],
+        [
+         #ifdef HAVE_SYS_MUTEX_H
+         #include <sys/mutex.h>
+         #endif
+         #ifdef HAVE_SYS_TYPES_H
+         #include <sys/types.h>
+         #endif
+         #ifdef HAVE_SYS_PARAM_H
+         #include <sys/param.h>
+         #endif
+         #ifdef HAVE_UVM_UVM_PARAM_H
+         #include <uvm/uvm_param.h>
+         #endif
+        ])
 
 # ------------------------------------------------------------------------
 # Types
@@ -660,7 +678,9 @@ AC_ARG_WITH(pam,
         fi
     ],
     [
-        if test "x$use_pam" = "x" ; then
+        if test "$use_pam" = "0"; then
+            AC_MSG_RESULT([disabled])
+        else
             use_pam=1
             AC_MSG_RESULT([enabled])
         fi
@@ -718,7 +738,7 @@ AC_ARG_WITH(ssl-static,
             checksslincldir "$dir"
         done
         for dir in "$withval" "$withval/lib"; do
-            checkssllibdirstatic "$dir" && break 2
+            checkssllibdirstatic "$dir" && break
         done
         use_sslstatic=1
         LDFLAGS="`echo $LDFLAGS | sed -e 's/-rdynamic/-ldl/g'`"
@@ -770,7 +790,7 @@ then
                 	checksslincldir "$dir"
                 done
                 for dir in "$withval" "$withval/lib"; do
-                    checkssllibdirdynamic "$dir" && break 2
+                    checkssllibdirdynamic "$dir" && break
                 done
             ]
         )
@@ -881,10 +901,51 @@ then
 fi
 # Check TLS version
 if test "$use_sslstatic" = "1" -o "$use_ssl" = "1"; then
-        AC_CHECK_LIB([ssl], [TLSv1_1_method],
-                [AC_DEFINE([HAVE_TLSV1_1], 1, [Define to 1 if you have openssl with TLSv1.1])])
-        AC_CHECK_LIB([ssl], [TLSv1_2_method],
-                [AC_DEFINE([HAVE_TLSV1_2], 1, [Define to 1 if you have openssl with TLSv1.2])])
+        if test "x$sslincldir" != "x"; then
+                CFLAGS="$CFLAGS -I$sslincldir"
+        fi
+        if test "x$ssllibdir" != "x"; then
+                LIBS="$LIBS -L$ssllibdir"
+        fi
+        AC_MSG_CHECKING([for TLSv1.1])
+        AC_LINK_IFELSE(
+                [AC_LANG_PROGRAM([#include <openssl/ssl.h>], [TLSv1_1_method()])],
+                [tlsv11=yes],
+                [tlsv11=no])
+        AC_MSG_RESULT($tlsv11)
+        if test "$tlsv11" = "yes" ; then
+                AC_DEFINE([HAVE_TLSV1_1], 1, [Define to 1 if you have openssl with TLSv1.1])
+        fi
+
+        AC_MSG_CHECKING([for TLSv1.2])
+        AC_LINK_IFELSE(
+                [AC_LANG_PROGRAM([#include <openssl/ssl.h>], [TLSv1_2_method()])],
+                [tlsv12=yes],
+                [tlsv12=no])
+        AC_MSG_RESULT($tlsv12)
+        if test "$tlsv12" = "yes" ; then
+                AC_DEFINE([HAVE_TLSV1_2], 1, [Define to 1 if you have openssl with TLSv1.2])
+        fi
+
+        AC_MSG_CHECKING([for EC_KEY support])
+        AC_LINK_IFELSE(
+                [AC_LANG_PROGRAM([#include <openssl/ssl.h>], [EC_KEY_new_by_curve_name(0)])],
+                [ec=yes],
+                [ec=no])
+        AC_MSG_RESULT($ec)
+        if test "$ec" = "yes" ; then
+                AC_DEFINE([HAVE_EC_KEY], 1, [Define to 1 if you have openssl with EC_KEY])
+        fi
+
+        AC_MSG_CHECKING([for ASN1_TIME_diff support])
+        AC_LINK_IFELSE(
+                [AC_LANG_PROGRAM([#include <openssl/ssl.h>], [ASN1_TIME_diff(0, 0, 0, 0)])],
+                [asn1timediff=yes],
+                [asn1timediff=no])
+        AC_MSG_RESULT($asn1timediff)
+        if test "$asn1timediff" = "yes" ; then
+                AC_DEFINE([HAVE_ASN1_TIME_DIFF], 1, [Define to 1 if you have openssl with ASN1_TIME_diff])
+        fi
 fi
 
 

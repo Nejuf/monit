@@ -86,34 +86,34 @@ void file_init() {
         char buf[STRLEN];
 
         /* Check if the pidfile was already set during configfile parsing */
-        if (Run.pidfile == NULL) {
+        if (Run.files.pid == NULL) {
                 /* Set the location of this programs pidfile */
                 if (! getuid()) {
                         snprintf(pidfile, STRLEN, "%s/%s", MYPIDDIR, MYPIDFILE);
                 } else {
                         snprintf(pidfile, STRLEN, "%s/.%s", Run.Env.home, MYPIDFILE);
                 }
-                Run.pidfile = Str_dup(pidfile);
+                Run.files.pid = Str_dup(pidfile);
         }
 
         /* Set the location of monit's id file */
-        if (Run.idfile == NULL) {
+        if (Run.files.id == NULL) {
                 snprintf(buf, STRLEN, "%s/.%s", Run.Env.home, MYIDFILE);
-                Run.idfile = Str_dup(buf);
+                Run.files.id = Str_dup(buf);
         }
-        Util_monitId(Run.idfile);
+        Util_monitId(Run.files.id);
 
         /* Set the location of monit's state file */
-        if (Run.statefile == NULL) {
+        if (Run.files.state == NULL) {
                 snprintf(buf, STRLEN, "%s/.%s", Run.Env.home, MYSTATEFILE);
-                Run.statefile = Str_dup(buf);
+                Run.files.state = Str_dup(buf);
         }
 }
 
 
 void file_finalize() {
         Engine_cleanup();
-        unlink(Run.pidfile);
+        unlink(Run.files.pid);
 }
 
 
@@ -188,12 +188,11 @@ boolean_t file_createPidFile(char *pidfile) {
 
 
 boolean_t file_checkStat(char *filename, char *description, int permmask) {
-        struct stat buf;
-        errno = 0;
-
         ASSERT(filename);
         ASSERT(description);
 
+        errno = 0;
+        struct stat buf;
         if (stat(filename, &buf) < 0) {
                 LogError("Cannot stat the %s '%s' -- %s\n", description, filename, STRERROR);
                 return false;
@@ -206,38 +205,8 @@ boolean_t file_checkStat(char *filename, char *description, int permmask) {
                 LogError("The %s '%s' must be owned by you.\n", description, filename);
                 return false;
         }
-        if ((buf.st_mode & 0777 ) & ~permmask) {
-                /*
-                 Explanation:
-
-                 buf.st_mode & 0777 ->  We just want to check the
-                 permissions not the file type...
-                 we did it already!
-                 () & ~permmask ->      We check if there are any other
-                 permissions set than in permmask
-                 */
-                LogError("The %s '%s' must have permissions no more than -%c%c%c%c%c%c%c%c%c (0%o); right now permissions are -%c%c%c%c%c%c%c%c%c (0%o).\n",
-                         description, filename,
-                         permmask&S_IRUSR ? 'r' : '-',
-                         permmask&S_IWUSR ? 'w' : '-',
-                         permmask&S_IXUSR ? 'x' : '-',
-                         permmask&S_IRGRP ? 'r' : '-',
-                         permmask&S_IWGRP ? 'w' : '-',
-                         permmask&S_IXGRP ? 'x' : '-',
-                         permmask&S_IROTH ? 'r' : '-',
-                         permmask&S_IWOTH ? 'w' : '-',
-                         permmask&S_IXOTH ? 'x' : '-',
-                         permmask&0777,
-                         buf.st_mode&S_IRUSR ? 'r' : '-',
-                         buf.st_mode&S_IWUSR ? 'w' : '-',
-                         buf.st_mode&S_IXUSR ? 'x' : '-',
-                         buf.st_mode&S_IRGRP ? 'r' : '-',
-                         buf.st_mode&S_IWGRP ? 'w' : '-',
-                         buf.st_mode&S_IXGRP ? 'x' : '-',
-                         buf.st_mode&S_IROTH ? 'r' : '-',
-                         buf.st_mode&S_IWOTH ? 'w' : '-',
-                         buf.st_mode&S_IXOTH ? 'x' : '-',
-                         buf.st_mode& 0777);
+        if ((buf.st_mode & 0777) & ~permmask) {
+                LogError("The %s '%s' permission 0%o is wrong, maximum 0%o allowed\n", description, filename, buf.st_mode & 0777, permmask & 0777);
                 return false;
         }
 

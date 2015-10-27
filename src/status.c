@@ -72,7 +72,7 @@
 /**
  * Show all services in the service list.
  */
-boolean_t status(char *level) {
+boolean_t status(const char *level, const char *group, const char *service) {
         boolean_t status = false;
         if (! exist_daemon()) {
                 LogError("Status not available -- the monit daemon is not running\n");
@@ -81,15 +81,26 @@ boolean_t status(char *level) {
         Socket_T S = NULL;
         if (Run.httpd.flags & Httpd_Net)
                 // FIXME: Monit HTTP support IPv4 only currently ... when IPv6 is implemented change the family to Socket_Ip
-                S = Socket_create(Run.httpd.socket.net.address ? Run.httpd.socket.net.address : "localhost", Run.httpd.socket.net.port, Socket_Tcp, Socket_Ip4, (SslOptions_T){.use_ssl = Run.httpd.flags & Httpd_Ssl, .clientpemfile = Run.httpd.socket.net.ssl.clientpem}, NET_TIMEOUT);
+                S = Socket_create(Run.httpd.socket.net.address ? Run.httpd.socket.net.address : "localhost", Run.httpd.socket.net.port, Socket_Tcp, Socket_Ip4, (SslOptions_T){.use_ssl = Run.httpd.flags & Httpd_Ssl, .clientpemfile = Run.httpd.socket.net.ssl.clientpem, .allowSelfSigned = Run.httpd.flags & Httpd_AllowSelfSignedCertificates}, NET_TIMEOUT);
         else if (Run.httpd.flags & Httpd_Unix)
                 S = Socket_createUnix(Run.httpd.socket.unix.path, Socket_Tcp, NET_TIMEOUT);
         else
                 LogError("Status not available - monit http interface is not enabled, please add the 'set httpd' statement\n");
         if (S) {
-                char *auth = Util_getBasicAuthHeaderMonit();
-                Socket_print(S, "GET /_status?format=text&level=%s HTTP/1.0\r\n%s\r\n", level, auth ? auth : "");
-                FREE(auth);
+                Socket_print(S, "GET /_status?format=text&level=%s", level);
+                if (group) {
+                        char *_group = Util_urlEncode((char *)group);
+                        Socket_print(S, "&group=%s", _group);
+                        FREE(_group);
+                }
+                if (service) {
+                        char *_service = Util_urlEncode((char *)service);
+                        Socket_print(S, "&service=%s", _service);
+                        FREE(_service);
+                }
+                char *_auth = Util_getBasicAuthHeaderMonit();
+                Socket_print(S, " HTTP/1.0\r\n%s\r\n", _auth ? _auth : "");
+                FREE(_auth);
 
                 /* Read past HTTP headers and check status */
                 char buf[1024];

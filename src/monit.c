@@ -82,6 +82,7 @@
 #include "io/Dir.h"
 #include "io/File.h"
 #include "system/Time.h"
+#include "util/List.h"
 #include "exceptions/AssertException.h"
 
 
@@ -138,15 +139,13 @@ ProcessTree_T *oldptree = NULL;
 char *actionnames[] = {"ignore", "alert", "restart", "stop", "exec", "unmonitor", "start", "monitor", ""};
 char *modenames[] = {"active", "passive", "manual"};
 char *checksumnames[] = {"UNKNOWN", "MD5", "SHA1"};
-char *operatornames[] = {"greater than", "less than", "equal to", "not equal to", "changed"};
+char *operatornames[] = {"less than", "greater than", "equal to", "not equal to", "changed"};
 char *operatorshortnames[] = {">", "<", "=", "!=", "<>"};
 char *statusnames[] = {"Accessible", "Accessible", "Accessible", "Running", "Online with all services", "Running", "Accessible", "Status ok", "UP"};
 char *servicetypes[] = {"Filesystem", "Directory", "File", "Process", "Remote Host", "System", "Fifo", "Program", "Network"};
 char *pathnames[] = {"Path", "Path", "Path", "Pid file", "Path", "", "Path"};
 char *icmpnames[] = {"Reply", "", "", "Destination Unreachable", "Source Quench", "Redirect", "", "", "Ping", "", "", "Time Exceeded", "Parameter Problem", "Timestamp Request", "Timestamp Reply", "Information Request", "Information Reply", "Address Mask Request", "Address Mask Reply"};
-char *sslnames[] = {"auto", "v2", "v3", "tlsv1", "tlsv1.1", "tlsv1.2", "none"};
-
-
+char *sslnames[] = {"none", "auto", "v2", "v3", "tlsv1", "tlsv1.1", "tlsv1.2"};
 
 
 /* ------------------------------------------------------------------ Public */
@@ -192,6 +191,15 @@ boolean_t do_wakeupcall() {
 
 
 /* ----------------------------------------------------------------- Private */
+
+
+static void _validateOnce() {
+        if (State_open()) {
+                State_update();
+                validate();
+                State_close();
+        }
+}
 
 
 /**
@@ -255,19 +263,20 @@ static void do_init() {
         /*
          * Get the position of the control file
          */
-        if (! Run.controlfile)
-                Run.controlfile = file_findControlFile();
+        if (! Run.files.control)
+                Run.files.control = file_findControlFile();
 
         /*
          * Initialize the process information gathering interface
          */
-        Run.doprocess = init_process_info();
+        if (init_process_info())
+                Run.flags |= Run_ProcessEngineEnabled;
 
         /*
          * Start the Parser and create the service list. This will also set
          * any Runtime constants defined in the controlfile.
          */
-        if (! parse(Run.controlfile))
+        if (! parse(Run.files.control))
                 exit(1);
 
         /*
@@ -311,7 +320,7 @@ static void do_init() {
 static void do_reinit() {
         LogInfo("Awakened by the SIGHUP signal\n"
                 "Reinitializing Monit - Control file '%s'\n",
-                Run.controlfile);
+                Run.files.control);
 
         /* Wait non-blocking for any children that has exited. Since we
          reinitialize any information about children we have setup to wait
@@ -327,7 +336,7 @@ static void do_reinit() {
                 heartbeatRunning = false;
         }
 
-        Run.doreload = false;
+        Run.flags &= ~Run_DoReload;
 
         /* Stop http interface */
         if (Run.httpd.flags & Httpd_Net || Run.httpd.flags & Httpd_Unix)
@@ -340,8 +349,8 @@ static void do_reinit() {
         /* Run the garbage collector */
         gc();
 
-        if (! parse(Run.controlfile)) {
-                LogError("%s daemon died\n", prog);
+        if (! parse(Run.files.control)) {
+                LogError("%s stopped -- configuration file parsing error\n", prog);
                 exit(1);
         }
 
@@ -361,8 +370,8 @@ static void do_reinit() {
         /* Reinitialize Runtime file variables */
         file_init();
 
-        if (! file_createPidFile(Run.pidfile)) {
-                LogError("%s daemon died\n", prog);
+        if (! file_createPidFile(Run.files.pid)) {
+                LogError("%s stopped -- cannot create a pid file\n", prog);
                 exit(1);
         }
 
@@ -392,7 +401,7 @@ static void do_action(char **args) {
         char *action = args[optind];
         char *service = args[++optind];
 
-        Run.once = true;
+        Run.flags |= Run_Once;
 
         if (! action) {
                 do_default();
@@ -402,28 +411,25 @@ static void do_action(char **args) {
                    IS(action, "unmonitor") ||
                    IS(action, "restart")) {
                 if (Run.mygroup || service) {
-                        int errors = 0;
-                        boolean_t (*_control_service)(const char *, const char *) = exist_daemon() ? control_service_daemon : control_service_string;
-
+                        List_T services = List_new();
                         if (Run.mygroup) {
                                 for (ServiceGroup_T sg = servicegrouplist; sg; sg = sg->next) {
                                         if (IS(Run.mygroup, sg->name)) {
-                                                for (ServiceGroupMember_T sgm = sg->members; sgm; sgm = sgm->next)
-                                                        if (! _control_service(sgm->name, action))
-                                                                errors++;
+                                                for (list_t m = sg->members->head; m; m = m->next) {
+                                                        Service_T s = m->e;
+                                                        List_append(services, s->name);
+                                                }
                                                 break;
                                         }
                                 }
                         } else if (IS(service, "all")) {
-                                for (Service_T s = servicelist; s; s = s->next) {
-                                        if (s->visited)
-                                                continue;
-                                        if (! _control_service(s->name, action))
-                                                errors++;
-                                }
+                                for (Service_T s = servicelist; s; s = s->next)
+                                        List_append(services, s->name);
                         } else {
-                                errors = _control_service(service, action) ? 0 : 1;
+                                List_append(services, service);
                         }
+                        int errors = exist_daemon() ? control_service_daemon(services, action) : control_service_string(services, action);
+                        List_free(&services);
                         if (errors)
                                 exit(1);
                 } else {
@@ -434,9 +440,9 @@ static void do_action(char **args) {
                 LogInfo("Reinitializing %s daemon\n", prog);
                 kill_daemon(SIGHUP);
         } else if (IS(action, "status")) {
-                status(LEVEL_NAME_FULL);
+                status(LEVEL_NAME_FULL, Run.mygroup, service);
         } else if (IS(action, "summary")) {
-                status(LEVEL_NAME_SUMMARY);
+                status(LEVEL_NAME_SUMMARY, Run.mygroup, service);
         } else if (IS(action, "procmatch")) {
                 if (! service) {
                         printf("Invalid syntax - usage: procmatch \"<pattern>\"\n");
@@ -446,8 +452,11 @@ static void do_action(char **args) {
         } else if (IS(action, "quit")) {
                 kill_daemon(SIGTERM);
         } else if (IS(action, "validate")) {
-                if (validate())
-                        exit(1);
+                if (do_wakeupcall())
+                        status(LEVEL_NAME_FULL, Run.mygroup, service);
+                else
+                        _validateOnce();
+                exit(1);
         } else {
                 LogError("Invalid argument -- %s  (-h will show valid arguments)\n", action);
                 exit(1);
@@ -459,10 +468,9 @@ static void do_action(char **args) {
  * Finalize monit
  */
 static void do_exit() {
-        sigset_t ns;
-        set_signal_block(&ns, NULL);
-        Run.stopped = true;
-        if (Run.isdaemon && ! Run.once) {
+        set_signal_block();
+        Run.flags |= Run_Stopped;
+        if ((Run.flags & Run_Daemon) && ! (Run.flags & Run_Once)) {
                 if (can_http())
                         monit_http(Httpd_Stop);
 
@@ -475,7 +483,7 @@ static void do_exit() {
                 LogInfo("Monit daemon with pid [%d] stopped\n", (int)getpid());
 
                 /* send the monit stop notification */
-                Event_post(Run.system, Event_Instance, State_Changed, Run.system->action_MONIT_STOP, "Monit stopped");
+                Event_post(Run.system, Event_Instance, State_Changed, Run.system->action_MONIT_STOP, "Monit %s stopped", VERSION);
         }
         gc();
 #ifdef HAVE_OPENSSL
@@ -491,11 +499,11 @@ static void do_exit() {
  * Also, if specified, start the monit http server if in deamon mode.
  */
 static void do_default() {
-        if (Run.isdaemon) {
+        if (Run.flags & Run_Daemon) {
                 if (do_wakeupcall())
                         exit(0);
 
-                Run.once = false;
+                Run.flags &= ~Run_Once;
                 if (can_http()) {
                         if (Run.httpd.flags & Httpd_Net)
                                 LogInfo("Starting Monit %s daemon with http interface at [%s]:%d\n", VERSION, Run.httpd.socket.net.address ? Run.httpd.socket.net.address : "*", Run.httpd.socket.net.port);
@@ -508,12 +516,12 @@ static void do_default() {
                 if (Run.startdelay)
                         LogInfo("Monit start delay set -- pause for %ds\n", Run.startdelay);
 
-                if (! Run.init)
+                if (! (Run.flags & Run_Foreground))
                         daemonize();
                 else if (! Run.debug)
                         Util_redirectStdFds();
 
-                if (! file_createPidFile(Run.pidfile)) {
+                if (! file_createPidFile(Run.files.pid)) {
                         LogError("Monit daemon died\n");
                         exit(1);
                 }
@@ -531,7 +539,7 @@ static void do_default() {
                         /* sleep can be interrupted by signal => make sure we paused long enough */
                         while (now < delay) {
                                 sleep((unsigned int)(delay - now));
-                                if (Run.stopped)
+                                if (Run.flags & Run_Stopped)
                                         do_exit();
                                 now = Time_now();
                         }
@@ -541,7 +549,7 @@ static void do_default() {
                         monit_http(Httpd_Start);
 
                 /* send the monit startup notification */
-                Event_post(Run.system, Event_Instance, State_Changed, Run.system->action_MONIT_START, "Monit started");
+                Event_post(Run.system, Event_Instance, State_Changed, Run.system->action_MONIT_START, "Monit %s started", VERSION);
 
                 if (Run.mmonits) {
                         Thread_create(heartbeatThread, heartbeat, NULL);
@@ -553,21 +561,21 @@ static void do_default() {
                         State_save();
 
                         /* In the case that there is no pending action then sleep */
-                        if (! Run.doaction)
+                        if (! (Run.flags & Run_ActionPending) && ! (Run.flags & Run_Stopped))
                                 sleep(Run.polltime);
 
-                        if (Run.dowakeup) {
-                                Run.dowakeup = false;
+                        if (Run.flags & Run_DoWakeup) {
+                                Run.flags &= ~Run_DoWakeup;
                                 LogInfo("Awakened by User defined signal 1\n");
                         }
 
-                        if (Run.stopped)
+                        if (Run.flags & Run_Stopped)
                                 do_exit();
-                        else if (Run.doreload)
+                        else if (Run.flags & Run_DoReload)
                                 do_reinit();
                 }
         } else {
-                validate();
+                _validateOnce();
         }
 }
 
@@ -618,12 +626,12 @@ static void handle_options(int argc, char **argv) {
                                                 THROW(AssertException, "The control file '%s' is not a file", Str_trunc(f, 80));
                                         if (! File_isReadable(f))
                                                 THROW(AssertException, "The control file '%s' is not readable", Str_trunc(f, 80));
-                                        Run.controlfile = Str_dup(f);
+                                        Run.files.control = Str_dup(f);
                                         break;
                                 }
                                 case 'd':
                                 {
-                                        Run.isdaemon = true;
+                                        Run.flags |= Run_Daemon;
                                         sscanf(optarg, "%d", &Run.polltime);
                                         if (Run.polltime < 1) {
                                                 LogError("Option -%c requires a natural number\n", opt);
@@ -638,25 +646,25 @@ static void handle_options(int argc, char **argv) {
                                 }
                                 case 'l':
                                 {
-                                        Run.logfile = Str_dup(optarg);
-                                        if (IS(Run.logfile, "syslog"))
-                                                Run.use_syslog = true;
-                                        Run.dolog = true;
+                                        Run.files.log = Str_dup(optarg);
+                                        if (IS(Run.files.log, "syslog"))
+                                                Run.flags |= Run_UseSyslog;
+                                        Run.flags |= Run_Log;
                                         break;
                                 }
                                 case 'p':
                                 {
-                                        Run.pidfile = Str_dup(optarg);
+                                        Run.files.pid = Str_dup(optarg);
                                         break;
                                 }
                                 case 's':
                                 {
-                                        Run.statefile = Str_dup(optarg);
+                                        Run.files.state = Str_dup(optarg);
                                         break;
                                 }
                                 case 'I':
                                 {
-                                        Run.init = true;
+                                        Run.flags |= Run_Foreground;
                                         break;
                                 }
                                 case 'i':
@@ -741,8 +749,8 @@ static void handle_options(int argc, char **argv) {
                         assert(Run.id);
                         printf("Reset Monit Id? [y/n]> ");
                         if ( getchar() == 'y') {
-                                File_delete(Run.idfile);
-                                Util_monitId(Run.idfile);
+                                File_delete(Run.files.id);
+                                Util_monitId(Run.files.id);
                                 kill_daemon(SIGHUP); // make any running Monit Daemon reload the new ID-File
                         }
                         exit(0);
@@ -768,7 +776,7 @@ static void help() {
         printf("Options are as follows:\n");
         printf(" -c file       Use this control file\n");
         printf(" -d n          Run as a daemon once per n seconds\n");
-        printf(" -g name       Set group name for start, stop, restart, monitor and unmonitor\n");
+        printf(" -g name       Set group name for start, stop, restart, monitor, unmonitor, status and summary\n");
         printf(" -l logfile    Print log information to this file\n");
         printf(" -p pidfile    Use this lock file in daemon mode\n");
         printf(" -s statefile  Set the file monit should write state information to\n");
@@ -794,8 +802,8 @@ static void help() {
         printf(" unmonitor all       - Disable monitoring of all services\n");
         printf(" unmonitor name      - Only disable monitoring of the named service\n");
         printf(" reload              - Reinitialize monit\n");
-        printf(" status              - Print full status information for each service\n");
-        printf(" summary             - Print short status information for each service\n");
+        printf(" status [name]       - Print full status information for service(s)\n");
+        printf(" summary [name]      - Print short status information for service(s)\n");
         printf(" quit                - Kill monit daemon process\n");
         printf(" validate            - Check all services and start if not running\n");
         printf(" procmatch <pattern> - Test process matching pattern\n");
@@ -817,17 +825,13 @@ static void version() {
  * M/Monit heartbeat thread
  */
 static void *heartbeat(void *args) {
-        sigset_t ns;
-        struct timespec wait;
-
-        set_signal_block(&ns, NULL);
+        set_signal_block();
         LogInfo("M/Monit heartbeat started\n");
         LOCK(heartbeatMutex)
         {
-                while (! Run.stopped && ! Run.doreload) {
+                while (! (Run.flags & Run_Stopped) && ! (Run.flags & Run_DoReload)) {
                         handle_mmonit(NULL);
-                        wait.tv_sec = Time_now() + Run.polltime;
-                        wait.tv_nsec = 0;
+                        struct timespec wait = {.tv_sec = Time_now() + Run.polltime, .tv_nsec = 0};
                         Sem_timeWait(heartbeatCond, heartbeatMutex, wait);
                 }
         }
@@ -844,7 +848,7 @@ static void *heartbeat(void *args) {
  * Signalhandler for a daemon reload call
  */
 static RETSIGTYPE do_reload(int sig) {
-        Run.doreload = true;
+        Run.flags |= Run_DoReload;
 }
 
 
@@ -852,7 +856,7 @@ static RETSIGTYPE do_reload(int sig) {
  * Signalhandler for monit finalization
  */
 static RETSIGTYPE do_destroy(int sig) {
-        Run.stopped = true;
+        Run.flags |= Run_Stopped;
 }
 
 
@@ -860,7 +864,7 @@ static RETSIGTYPE do_destroy(int sig) {
  * Signalhandler for a daemon wakeup call
  */
 static RETSIGTYPE do_wakeup(int sig) {
-        Run.dowakeup = true;
+        Run.flags |= Run_DoWakeup;
 }
 
 

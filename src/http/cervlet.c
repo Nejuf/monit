@@ -64,6 +64,10 @@
 #include <sys/time.h>
 #endif
 
+// libmonit
+#include "system/Time.h"
+#include "util/List.h"
+
 #include "monit.h"
 #include "cervlet.h"
 #include "engine.h"
@@ -73,9 +77,7 @@
 #include "alert.h"
 #include "process.h"
 #include "device.h"
-
-// libmonit
-#include "system/Time.h"
+#include "protocol.h"
 
 #define ACTION(c) ! strncasecmp(req->url, c, sizeof(c))
 
@@ -453,22 +455,22 @@ static void do_runtime(HttpRequest req, HttpResponse res) {
                             "<tr><td>Effective user running Monit</td>"
                             "<td>%s</td></tr>", Run.Env.user);
         StringBuffer_append(res->outputbuffer,
-                            "<tr><td>Controlfile</td><td>%s</td></tr>", Run.controlfile);
-        if (Run.logfile)
+                            "<tr><td>Controlfile</td><td>%s</td></tr>", Run.files.control);
+        if (Run.files.log)
                 StringBuffer_append(res->outputbuffer,
-                                    "<tr><td>Logfile</td><td>%s</td></tr>", Run.logfile);
+                                    "<tr><td>Logfile</td><td>%s</td></tr>", Run.files.log);
         StringBuffer_append(res->outputbuffer,
-                            "<tr><td>Pidfile</td><td>%s</td></tr>", Run.pidfile);
+                            "<tr><td>Pidfile</td><td>%s</td></tr>", Run.files.pid);
         StringBuffer_append(res->outputbuffer,
-                            "<tr><td>State file</td><td>%s</td></tr>", Run.statefile);
+                            "<tr><td>State file</td><td>%s</td></tr>", Run.files.state);
         StringBuffer_append(res->outputbuffer,
                             "<tr><td>Debug</td><td>%s</td></tr>",
                             Run.debug ? "True" : "False");
         StringBuffer_append(res->outputbuffer,
-                            "<tr><td>Log</td><td>%s</td></tr>", Run.dolog ? "True" : "False");
+                            "<tr><td>Log</td><td>%s</td></tr>", (Run.flags & Run_Log) ? "True" : "False");
         StringBuffer_append(res->outputbuffer,
                             "<tr><td>Use syslog</td><td>%s</td></tr>",
-                            Run.use_syslog ? "True" : "False");
+                            (Run.flags & Run_UseSyslog) ? "True" : "False");
         if (Run.eventlist_dir) {
                 char slots[STRLEN];
                 if (Run.eventlist_slots < 0)
@@ -480,27 +482,53 @@ static void do_runtime(HttpRequest req, HttpResponse res) {
                                     "<td>base directory %s with %d slots</td></tr>",
                                     Run.eventlist_dir, Run.eventlist_slots);
         }
+#ifdef HAVE_OPENSSL
+        {
+                const char *options = Ssl_printOptions(&(Run.ssl), (char[STRLEN]){}, STRLEN);
+                if (options && *options)
+                        StringBuffer_append(res->outputbuffer,
+                                    "<tr><td>SSL options</td><td>%s</td></tr>", options);
+        }
+#endif
         if (Run.mmonits) {
                 StringBuffer_append(res->outputbuffer, "<tr><td>M/Monit server(s)</td><td>");
                 for (Mmonit_T c = Run.mmonits; c; c = c->next)
                 {
-                        StringBuffer_append(res->outputbuffer,
-                                            "%s with timeout %d seconds%s%s%s%s</td></tr>%s",
-                                            c->url->url,
-                                            c->timeout / 1000,
-                                            c->ssl.use_ssl ? " ssl version " : "",
-                                            c->ssl.use_ssl ? sslnames[c->ssl.version] : "",
-                                            c->ssl.certmd5 ? " server cert md5 sum " : "",
-                                            c->ssl.certmd5 ? c->ssl.certmd5 : "",
-                                            c->next ? "<tr><td>&nbsp;</td><td>" : "");
+                        StringBuffer_append(res->outputbuffer, "%s with timeout %.0f seconds", c->url->url, c->timeout / 1000.);
+#ifdef HAVE_OPENSSL
+                        if (c->ssl.use_ssl) {
+                                StringBuffer_append(res->outputbuffer, " using SSL/TLS");
+                                const char *options = Ssl_printOptions(&c->ssl, (char[STRLEN]){}, STRLEN);
+                                if (options && *options)
+                                        StringBuffer_append(res->outputbuffer, " with options {%s}", options);
+                                if (c->ssl.checksum)
+                                        StringBuffer_append(res->outputbuffer, " and certificate checksum %s equal to '%s'", checksumnames[c->ssl.checksumType], c->ssl.checksum);
+                        }
+#endif
+                        if (c->url->user)
+                                StringBuffer_append(res->outputbuffer, " using credentials");
+                        if (c->next)
+                                StringBuffer_append(res->outputbuffer, "</td></tr><tr><td>&nbsp;</td><td>");
                 }
-                printf("\n");
+                StringBuffer_append(res->outputbuffer, "</td></tr>");
         }
         if (Run.mailservers) {
                 StringBuffer_append(res->outputbuffer, "<tr><td>Mail server(s)</td><td>");
-                for (MailServer_T mta = Run.mailservers; mta; mta = mta->next)
-                        StringBuffer_append(res->outputbuffer, "%s:%d%s&nbsp;",
-                                            mta->host, mta->port, mta->ssl.use_ssl ? "(ssl)" : "");
+                for (MailServer_T mta = Run.mailservers; mta; mta = mta->next) {
+                        StringBuffer_append(res->outputbuffer, "%s:%d", mta->host, mta->port);
+#ifdef HAVE_OPENSSL
+                        if (mta->ssl.use_ssl) {
+                                StringBuffer_append(res->outputbuffer, " using SSL/TLS");
+                                const char *options = Ssl_printOptions(&mta->ssl, (char[STRLEN]){}, STRLEN);
+                                if (options && *options)
+                                        StringBuffer_append(res->outputbuffer, " with options {%s}", options);
+                                if (mta->ssl.checksum)
+                                        StringBuffer_append(res->outputbuffer, " and certificate checksum %s equal to '%s'", checksumnames[mta->ssl.checksumType], mta->ssl.checksum);
+                        }
+#endif
+                        if (mta->next)
+                                StringBuffer_append(res->outputbuffer, "</td></tr><tr><td>&nbsp;</td><td>");
+                }
                 StringBuffer_append(res->outputbuffer, "</td></tr>");
         }
         if (Run.MailFormat.from)
@@ -570,7 +598,7 @@ static void do_runtime(HttpRequest req, HttpResponse res) {
                                     "<td><form method=POST action='_runtime'>Force validate now? <input type=hidden name='action' value='validate'>"
                                     "<input type=submit value='Go'></form></td>");
 
-                if (Run.dolog && ! Run.use_syslog) {
+                if ((Run.flags & Run_Log) && ! (Run.flags & Run_UseSyslog)) {
                         StringBuffer_append(res->outputbuffer,
                                             "<td><form method=GET action='_viewlog'>View Monit logfile? <input type=submit value='Go'></form></td>");
                 }
@@ -583,14 +611,14 @@ static void do_runtime(HttpRequest req, HttpResponse res) {
 
 static void do_viewlog(HttpRequest req, HttpResponse res) {
         if (is_readonly(req)) {
-                send_error(res, SC_FORBIDDEN, "You do not have sufficent privileges to access this page");
+                send_error(req, res, SC_FORBIDDEN, "You do not have sufficent privileges to access this page");
                 return;
         }
         do_head(res, "_viewlog", "View log", 100);
-        if (Run.dolog && ! Run.use_syslog) {
+        if ((Run.flags & Run_Log) && ! (Run.flags & Run_UseSyslog)) {
                 struct stat sb;
-                if (! stat(Run.logfile, &sb)) {
-                        FILE *f = fopen(Run.logfile, "r");
+                if (! stat(Run.files.log, &sb)) {
+                        FILE *f = fopen(Run.files.log, "r");
                         if (f) {
 #define BUFSIZE 512
                                 size_t n;
@@ -611,7 +639,7 @@ static void do_viewlog(HttpRequest req, HttpResponse res) {
         } else {
                 StringBuffer_append(res->outputbuffer,
                                     "<b>Cannot view logfile:</b><br>");
-                if (! Run.dolog)
+                if (! (Run.flags & Run_Log))
                         StringBuffer_append(res->outputbuffer, "Monit was started without logging");
                 else
                         StringBuffer_append(res->outputbuffer, "Monit uses syslog");
@@ -624,22 +652,18 @@ static void handle_action(HttpRequest req, HttpResponse res) {
         char *name = req->url;
         Service_T s = Util_getService(++name);
         if (! s) {
-                send_error(res, SC_NOT_FOUND, "There is no service named \"%s\"", name ? name : "");
+                send_error(req, res, SC_NOT_FOUND, "There is no service named \"%s\"", name ? name : "");
                 return;
         }
         const char *action = get_parameter(req, "action");
         if (action) {
                 if (is_readonly(req)) {
-                        send_error(res, SC_FORBIDDEN, "You do not have sufficent privileges to access this page");
+                        send_error(req, res, SC_FORBIDDEN, "You do not have sufficent privileges to access this page");
                         return;
                 }
                 Action_Type doaction = Util_getAction(action);
                 if (doaction == Action_Ignored) {
-                        send_error(res, SC_BAD_REQUEST, "Invalid action \"%s\"", action);
-                        return;
-                }
-                if (s->doaction != Action_Ignored) {
-                        send_error(res, SC_SERVICE_UNAVAILABLE, "Other action already in progress -- please try again later");
+                        send_error(req, res, SC_BAD_REQUEST, "Invalid action \"%s\"", action);
                         return;
                 }
                 s->doaction = doaction;
@@ -649,7 +673,7 @@ static void handle_action(HttpRequest req, HttpResponse res) {
                         s->token = Str_dup(token);
                 }
                 LogInfo("'%s' %s on user request\n", s->name, action);
-                Run.doaction = true; /* set the global flag */
+                Run.flags |= Run_ActionPending; /* set the global flag */
                 do_wakeupcall();
         }
         do_service(req, res, s);
@@ -664,22 +688,18 @@ static void handle_do_action(HttpRequest req, HttpResponse res) {
 
         if (action) {
                 if (is_readonly(req)) {
-                        send_error(res, SC_FORBIDDEN, "You do not have sufficent privileges to access this page");
+                        send_error(req, res, SC_FORBIDDEN, "You do not have sufficent privileges to access this page");
                         return;
                 }
                 if ((doaction = Util_getAction(action)) == Action_Ignored) {
-                        send_error(res, SC_BAD_REQUEST, "Invalid action \"%s\"", action);
+                        send_error(req, res, SC_BAD_REQUEST, "Invalid action \"%s\"", action);
                         return;
                 }
                 for (HttpParameter p = req->params; p; p = p->next) {
                         if (IS(p->name, "service")) {
                                 s  = Util_getService(p->value);
                                 if (! s) {
-                                        send_error(res, SC_BAD_REQUEST, "There is no service named \"%s\"", p->value ? p->value : "");
-                                        return;
-                                }
-                                if (s->doaction != Action_Ignored) {
-                                        send_error(res, SC_SERVICE_UNAVAILABLE, "Other action already in progress -- please try again later");
+                                        send_error(req, res, SC_BAD_REQUEST, "There is no service named \"%s\"", p->value ? p->value : "");
                                         return;
                                 }
                                 s->doaction = doaction;
@@ -697,7 +717,7 @@ static void handle_do_action(HttpRequest req, HttpResponse res) {
                                 q->token = Str_dup(token);
                         }
                 }
-                Run.doaction = true;
+                Run.flags |= Run_ActionPending;
                 do_wakeupcall();
         }
 }
@@ -707,7 +727,7 @@ static void handle_run(HttpRequest req, HttpResponse res) {
         const char *action = get_parameter(req, "action");
         if (action) {
                 if (is_readonly(req)) {
-                        send_error(res, SC_FORBIDDEN, "You do not have sufficent privileges to access this page");
+                        send_error(req, res, SC_FORBIDDEN, "You do not have sufficent privileges to access this page");
                         return;
                 }
                 if (IS(action, "validate")) {
@@ -715,7 +735,7 @@ static void handle_run(HttpRequest req, HttpResponse res) {
                         do_wakeupcall();
                 } else if (IS(action, "stop")) {
                         LogInfo("The Monit http server stopped on user request\n");
-                        send_error(res, SC_SERVICE_UNAVAILABLE, "The Monit http server is stopped");
+                        send_error(req, res, SC_SERVICE_UNAVAILABLE, "The Monit http server is stopped");
                         Engine_stop();
                         return;
                 }
@@ -757,8 +777,8 @@ static void do_service(HttpRequest req, HttpResponse res, Service_T s) {
         _printServiceStatus(res->outputbuffer, s);
         StringBuffer_append(res->outputbuffer, "</td></tr>");
         for (ServiceGroup_T sg = servicegrouplist; sg; sg = sg->next)
-                for (ServiceGroupMember_T sgm = sg->members; sgm; sgm = sgm->next)
-                        if (IS(sgm->name, s->name))
+                for (list_t m = sg->members->head; m; m = m->next)
+                        if (m->e == s)
                                 StringBuffer_append(res->outputbuffer, "<tr><td>Group</td><td class='blue-text'>%s</td></tr>", sg->name);
         StringBuffer_append(res->outputbuffer,
                             "<tr><td>Monitoring mode</td><td>%s</td></tr>", modenames[s->mode]);
@@ -947,7 +967,7 @@ static void do_home_system(HttpRequest req, HttpResponse res) {
                             "<th align='left' class='first'>System</th>"
                             "<th align='left'>Status</th>");
 
-        if (Run.doprocess) {
+        if (Run.flags & Run_ProcessEngineEnabled) {
                 StringBuffer_append(res->outputbuffer,
                                     "<th align='right'>Load</th>"
                                     "<th align='right'>CPU</th>"
@@ -963,7 +983,7 @@ static void do_home_system(HttpRequest req, HttpResponse res) {
         _printServiceStatus(res->outputbuffer, s);
         StringBuffer_append(res->outputbuffer,
                             "</td>");
-        if (Run.doprocess) {
+        if (Run.flags & Run_ProcessEngineEnabled) {
                 StringBuffer_append(res->outputbuffer,
                                     "<td align='right'>[%.2f]&nbsp;[%.2f]&nbsp;[%.2f]</td>"
                                     "<td align='right'>"
@@ -1007,7 +1027,7 @@ static void do_home_process(HttpRequest req, HttpResponse res) {
                                             "<th align='left' class='first'>Process</th>"
                                             "<th align='left'>Status</th>"
                                             "<th align='right'>Uptime</th>");
-                        if (Run.doprocess) {
+                        if (Run.flags & Run_ProcessEngineEnabled) {
                                 StringBuffer_append(res->outputbuffer,
                                                     "<th align='right'>CPU Total</b></th>"
                                                     "<th align='right'>Memory Total</th>");
@@ -1027,7 +1047,7 @@ static void do_home_process(HttpRequest req, HttpResponse res) {
                 if (! Util_hasServiceStatus(s)) {
                         StringBuffer_append(res->outputbuffer,
                                             "<td align='right'>-</td>");
-                        if (Run.doprocess) {
+                        if (Run.flags & Run_ProcessEngineEnabled) {
                                 StringBuffer_append(res->outputbuffer,
                                                     "<td align='right'>-</td>"
                                                     "<td align='right'>-</td>");
@@ -1037,7 +1057,7 @@ static void do_home_process(HttpRequest req, HttpResponse res) {
                         StringBuffer_append(res->outputbuffer,
                                             "<td align='right'>%s</td>", uptime);
                         FREE(uptime);
-                        if (Run.doprocess) {
+                        if (Run.flags & Run_ProcessEngineEnabled) {
                                 StringBuffer_append(res->outputbuffer,
                                                     "<td align='right' class='%s'>%.1f%%</td>",
                                                     (s->error & Event_Resource) ? "red-text" : "",
@@ -1427,7 +1447,7 @@ static void do_home_host(HttpRequest req, HttpResponse res) {
                                         StringBuffer_append(res->outputbuffer, "&nbsp;&nbsp;<b>|</b>&nbsp;&nbsp;");
                                 StringBuffer_append(res->outputbuffer, "<span class='%s'>[%s] at port %d</span>",
                                                     (port->is_available) ? "" : "red-text",
-                                                    port->protocol->name, port->port);
+                                                    port->protocol->name, port->target.net.port);
                         }
                         StringBuffer_append(res->outputbuffer, "</td>");
                 }
@@ -1578,13 +1598,26 @@ static void print_service_rules_existence(HttpResponse res, Service_T s) {
 static void print_service_rules_port(HttpResponse res, Service_T s) {
         for (Port_T p = s->portlist; p; p = p->next) {
                 StringBuffer_append(res->outputbuffer, "<tr class='rule'><td>Port</td><td>");
+                StringBuffer_T buf = StringBuffer_create(64);
+                StringBuffer_append(buf, "If failed [%s]:%d%s type %s/%s protocol %s with timeout %.0f seconds",
+                        p->hostname, p->target.net.port, Util_portRequestDescription(p), Util_portTypeDescription(p), Util_portIpDescription(p), p->protocol->name, p->timeout / 1000.);
                 if (p->retry > 1)
-                        Util_printRule(res->outputbuffer, p->action, "If failed [%s]:%d%s type %s/%s protocol %s with timeout %d seconds and retry %d times", p->hostname, p->port, p->request ? p->request : "", Util_portTypeDescription(p), Util_portIpDescription(p), p->protocol->name, p->timeout / 1000, p->retry);
-                else
-                        Util_printRule(res->outputbuffer, p->action, "If failed [%s]:%d%s type %s/%s protocol %s with timeout %d seconds", p->hostname, p->port, p->request ? p->request : "", Util_portTypeDescription(p), Util_portIpDescription(p), p->protocol->name, p->timeout / 1000);
+                        StringBuffer_append(buf, " and retry %d times", p->retry);
+#ifdef HAVE_OPENSSL
+                if (p->target.net.ssl.use_ssl) {
+                        StringBuffer_append(buf, " using SSL/TLS");
+                        const char *options = Ssl_printOptions(&p->target.net.ssl, (char[STRLEN]){}, STRLEN);
+                        if (options && *options)
+                                StringBuffer_append(buf, " with options {%s}", options);
+                        if (p->target.net.ssl.minimumValidDays > 0)
+                                StringBuffer_append(buf, " and certificate expires in more than %d days", p->target.net.ssl.minimumValidDays);
+                        if (p->target.net.ssl.checksum)
+                                StringBuffer_append(buf, " and certificate checksum %s equal to '%s'", checksumnames[p->target.net.ssl.checksumType], p->target.net.ssl.checksum);
+                }
+#endif
+                Util_printRule(res->outputbuffer, p->action, "%s", StringBuffer_toString(buf));
+                StringBuffer_free(&buf);
                 StringBuffer_append(res->outputbuffer, "</td></tr>");
-                if (p->SSL.certmd5 != NULL)
-                        StringBuffer_append(res->outputbuffer, "<tr class='rule'><td>Server certificate md5 sum</td><td>%s</td></tr>", p->SSL.certmd5);
         }
 }
 
@@ -1593,9 +1626,9 @@ static void print_service_rules_socket(HttpResponse res, Service_T s) {
         for (Port_T p = s->socketlist; p; p = p->next) {
                 StringBuffer_append(res->outputbuffer, "<tr class='rule'><td>Unix Socket</td><td>");
                 if (p->retry > 1)
-                        Util_printRule(res->outputbuffer, p->action, "If failed %s type %s protocol %s with timeout %d seconds and retry %d time(s)", p->pathname, Util_portTypeDescription(p), p->protocol->name, p->timeout / 1000, p->retry);
+                        Util_printRule(res->outputbuffer, p->action, "If failed %s type %s protocol %s with timeout %.0f seconds and retry %d time(s)", p->target.unix.pathname, Util_portTypeDescription(p), p->protocol->name, p->timeout / 1000., p->retry);
                 else
-                        Util_printRule(res->outputbuffer, p->action, "If failed %s type %s protocol %s with timeout %d seconds", p->pathname, Util_portTypeDescription(p), p->protocol->name, p->timeout / 1000);
+                        Util_printRule(res->outputbuffer, p->action, "If failed %s type %s protocol %s with timeout %.0f seconds", p->target.unix.pathname, Util_portTypeDescription(p), p->protocol->name, p->timeout / 1000.);
                 StringBuffer_append(res->outputbuffer, "</td></tr>");
         }
 }
@@ -1614,7 +1647,7 @@ static void print_service_rules_icmp(HttpResponse res, Service_T s) {
                                 StringBuffer_append(res->outputbuffer, "<tr class='rule'><td>Ping</td><td>");
                                 break;
                 }
-                Util_printRule(res->outputbuffer, i->action, "If failed [count %d with timeout %d seconds]", i->count, i->timeout / 1000);
+                Util_printRule(res->outputbuffer, i->action, "If failed [count %d size %d with timeout %.0f seconds]", i->count, i->size, i->timeout / 1000.);
                 StringBuffer_append(res->outputbuffer, "</td></tr>");
         }
 }
@@ -1689,8 +1722,28 @@ static void print_service_rules_filesystem(HttpResponse res, Service_T s) {
                         else
                                 Util_printRule(res->outputbuffer, dl->action, "If %s %.1f%%", operatornames[dl->operator], dl->limit_percent / 10.);
                         StringBuffer_append(res->outputbuffer, "</td></tr>");
+                } else if (dl->resource == Resource_InodeFree) {
+                        StringBuffer_append(res->outputbuffer, "<tr class='rule'><td>Inodes free limit</td><td>");
+                        if (dl->limit_absolute > -1)
+                                Util_printRule(res->outputbuffer, dl->action, "If %s %lld", operatornames[dl->operator], dl->limit_absolute);
+                        else
+                                Util_printRule(res->outputbuffer, dl->action, "If %s %.1f%%", operatornames[dl->operator], dl->limit_percent / 10.);
+                        StringBuffer_append(res->outputbuffer, "</td></tr>");
                 } else if (dl->resource == Resource_Space) {
                         StringBuffer_append(res->outputbuffer, "<tr class='rule'><td>Space usage limit</td><td>");
+                        if (dl->limit_absolute > -1) {
+                                if (s->inf->priv.filesystem.f_bsize > 0) {
+                                        char buf[STRLEN];
+                                        Util_printRule(res->outputbuffer, dl->action, "If %s %s", operatornames[dl->operator], Str_bytesToSize(dl->limit_absolute * s->inf->priv.filesystem.f_bsize, buf));
+                                } else {
+                                        Util_printRule(res->outputbuffer, dl->action, "If %s %lld blocks", operatornames[dl->operator], dl->limit_absolute);
+                                }
+                        } else {
+                                Util_printRule(res->outputbuffer, dl->action, "If %s %.1f%%", operatornames[dl->operator], dl->limit_percent / 10.);
+                        }
+                        StringBuffer_append(res->outputbuffer, "</td></tr>");
+                } else if (dl->resource == Resource_SpaceFree) {
+                        StringBuffer_append(res->outputbuffer, "<tr class='rule'><td>Space free limit</td><td>");
                         if (dl->limit_absolute > -1) {
                                 if (s->inf->priv.filesystem.f_bsize > 0) {
                                         char buf[STRLEN];
@@ -1983,9 +2036,9 @@ static void print_service_status_port(HttpResponse res, Service_T s) {
                 if (! status)
                         StringBuffer_append(res->outputbuffer, "<td>-<td>");
                 else if (! p->is_available)
-                        StringBuffer_append(res->outputbuffer, "<td class='red-text'>failed to [%s]:%d%s type %s/%s protocol %s</td>", p->hostname, p->port, p->request ? p->request : "", Util_portTypeDescription(p), Util_portIpDescription(p), p->protocol->name);
+                        StringBuffer_append(res->outputbuffer, "<td class='red-text'>failed to [%s]:%d%s type %s/%s %sprotocol %s</td>", p->hostname, p->target.net.port, Util_portRequestDescription(p), Util_portTypeDescription(p), Util_portIpDescription(p), p->target.net.ssl.use_ssl ? "using SSL/TLS " : "", p->protocol->name);
                 else
-                        StringBuffer_append(res->outputbuffer, "<td>%.3fs to %s:%d%s type %s/%s protocol %s</td>", p->response, p->hostname, p->port, p->request ? p->request : "", Util_portTypeDescription(p), Util_portIpDescription(p), p->protocol->name);
+                        StringBuffer_append(res->outputbuffer, "<td>%.3fs to %s:%d%s type %s/%s %s protocol %s</td>", p->response, p->hostname, p->target.net.port, Util_portRequestDescription(p), Util_portTypeDescription(p), Util_portIpDescription(p), p->target.net.ssl.use_ssl ? "using SSL/TLS " : "", p->protocol->name);
                 StringBuffer_append(res->outputbuffer, "</tr>");
         }
 }
@@ -1998,9 +2051,9 @@ static void print_service_status_socket(HttpResponse res, Service_T s) {
                 if (! status)
                         StringBuffer_append(res->outputbuffer, "<td>-<td>");
                 else if (! p->is_available)
-                        StringBuffer_append(res->outputbuffer, "<td class='red-text'>failed to %s type %s protocol %s</td>", p->pathname, Util_portTypeDescription(p), p->protocol->name);
+                        StringBuffer_append(res->outputbuffer, "<td class='red-text'>failed to %s type %s protocol %s</td>", p->target.unix.pathname, Util_portTypeDescription(p), p->protocol->name);
                 else
-                        StringBuffer_append(res->outputbuffer, "<td>%.3fs to %s type %s protocol %s</td>", p->response, p->pathname, Util_portTypeDescription(p), p->protocol->name);
+                        StringBuffer_append(res->outputbuffer, "<td>%.3fs to %s type %s protocol %s</td>", p->response, p->target.unix.pathname, Util_portTypeDescription(p), p->protocol->name);
                 StringBuffer_append(res->outputbuffer, "</tr>");
         }
 }
@@ -2017,7 +2070,7 @@ static void print_service_status_icmp(HttpResponse res, Service_T s) {
                 else if (i->response < 0)
                         StringBuffer_append(res->outputbuffer, "<td class='gray-text'>N/A</td>");
                 else
-                        StringBuffer_append(res->outputbuffer, "<td>%.3fs</td>", i->response);
+                        StringBuffer_append(res->outputbuffer, "<td>%.3fms</td>", i->response * 1000.);
                 StringBuffer_append(res->outputbuffer, "</tr>");
         }
 }
@@ -2292,7 +2345,7 @@ static void print_service_status_process_uptime(HttpResponse res, Service_T s) {
 
 
 static void print_service_status_process_children(HttpResponse res, Service_T s) {
-        if (Run.doprocess) {
+        if (Run.flags & Run_ProcessEngineEnabled) {
                 StringBuffer_append(res->outputbuffer, "<tr><td>Children</td>");
                 if (! Util_hasServiceStatus(s))
                         StringBuffer_append(res->outputbuffer, "<td>-</td>");
@@ -2304,7 +2357,7 @@ static void print_service_status_process_children(HttpResponse res, Service_T s)
 
 
 static void print_service_status_process_cpu(HttpResponse res, Service_T s) {
-        if (Run.doprocess) {
+        if (Run.flags & Run_ProcessEngineEnabled) {
                 StringBuffer_append(res->outputbuffer, "<tr><td>CPU usage</td>");
                 if (! Util_hasServiceStatus(s))
                         StringBuffer_append(res->outputbuffer, "<td>-</td>");
@@ -2316,7 +2369,7 @@ static void print_service_status_process_cpu(HttpResponse res, Service_T s) {
 
 
 static void print_service_status_process_cputotal(HttpResponse res, Service_T s) {
-        if (Run.doprocess) {
+        if (Run.flags & Run_ProcessEngineEnabled) {
                 StringBuffer_append(res->outputbuffer, "<tr><td>Total CPU usage (incl. children)</td>");
                 if (! Util_hasServiceStatus(s))
                         StringBuffer_append(res->outputbuffer, "<td>-</td>");
@@ -2328,7 +2381,7 @@ static void print_service_status_process_cputotal(HttpResponse res, Service_T s)
 
 
 static void print_service_status_process_memory(HttpResponse res, Service_T s) {
-        if (Run.doprocess) {
+        if (Run.flags & Run_ProcessEngineEnabled) {
                 StringBuffer_append(res->outputbuffer, "<tr><td>Memory usage</td>");
                 if (! Util_hasServiceStatus(s)) {
                         StringBuffer_append(res->outputbuffer, "<td>-</td>");
@@ -2342,7 +2395,7 @@ static void print_service_status_process_memory(HttpResponse res, Service_T s) {
 
 
 static void print_service_status_process_memorytotal(HttpResponse res, Service_T s) {
-        if (Run.doprocess) {
+        if (Run.flags & Run_ProcessEngineEnabled) {
                 StringBuffer_append(res->outputbuffer, "<tr><td>Total memory usage (incl. children)</td>");
                 if (! Util_hasServiceStatus(s)) {
                         StringBuffer_append(res->outputbuffer, "<td>-</td>");
@@ -2486,6 +2539,8 @@ static void print_status(HttpRequest req, HttpResponse res, int version) {
         Level_Type level = Level_Full;
         const char *stringFormat = get_parameter(req, "format");
         const char *stringLevel = get_parameter(req, "level");
+        const char *stringGroup = Util_urlDecode((char *)get_parameter(req, "group"));
+        const char *stringService = Util_urlDecode((char *)get_parameter(req, "service"));
 
         if (stringLevel && Str_startsWith(stringLevel, LEVEL_NAME_SUMMARY))
                 level = Level_Summary;
@@ -2502,8 +2557,19 @@ static void print_status(HttpRequest req, HttpResponse res, int version) {
                 StringBuffer_append(res->outputbuffer, "The Monit daemon %s uptime: %s\n\n", VERSION, uptime);
                 FREE(uptime);
 
-                for (Service_T s = servicelist_conf; s; s = s->next_conf)
-                        status_service_txt(s, res, level);
+                if (stringGroup) {
+                        for (ServiceGroup_T sg = servicegrouplist; sg; sg = sg->next) {
+                                if (IS(stringGroup, sg->name)) {
+                                        for (list_t m = sg->members->head; m; m = m->next)
+                                                status_service_txt(m->e, res, level);
+                                        break;
+                                }
+                        }
+                } else {
+                        for (Service_T s = servicelist_conf; s; s = s->next_conf)
+                                if (! stringService || IS(stringService, s->name))
+                                        status_service_txt(s, res, level);
+                }
                 set_content_type(res, "text/plain");
         }
 }
@@ -2566,10 +2632,10 @@ static void status_service_txt(Service_T s, HttpResponse res, Level_Type level) 
                                                     "  %-33s %d\n"
                                                     "  %-33s %d\n"
                                                     "  %-33s %s\n",
-                                                    "permission", s->inf->priv.directory.mode & 07777,
-                                                    "uid", (int)s->inf->priv.directory.uid,
-                                                    "gid", (int)s->inf->priv.directory.gid,
-                                                    "timestamp", Time_string(s->inf->priv.directory.timestamp, buf));
+                                                    "permission", s->inf->priv.fifo.mode & 07777,
+                                                    "uid", (int)s->inf->priv.fifo.uid,
+                                                    "gid", (int)s->inf->priv.fifo.gid,
+                                                    "timestamp", Time_string(s->inf->priv.fifo.timestamp, buf));
                                         break;
 
                                 case Service_Net:
@@ -2611,9 +2677,9 @@ static void status_service_txt(Service_T s, HttpResponse res, Level_Type level) 
                                                     "  %-33s %o\n"
                                                     "  %-33s %d\n"
                                                     "  %-33s %d\n",
-                                                    "permission", s->inf->priv.directory.mode & 07777,
-                                                    "uid", (int)s->inf->priv.directory.uid,
-                                                    "gid", (int)s->inf->priv.directory.gid);
+                                                    "permission", s->inf->priv.filesystem.mode & 07777,
+                                                    "uid", (int)s->inf->priv.filesystem.uid,
+                                                    "gid", (int)s->inf->priv.filesystem.gid);
                                         StringBuffer_append(res->outputbuffer,
                                                             "  %-33s 0x%x\n"
                                                             "  %-33s %s\n",
@@ -2664,7 +2730,7 @@ static void status_service_txt(Service_T s, HttpResponse res, Level_Type level) 
                                                             "gid", s->inf->priv.process.gid,
                                                             "uptime", uptime);
                                         FREE(uptime);
-                                        if (Run.doprocess) {
+                                        if (Run.flags & Run_ProcessEngineEnabled) {
                                                 StringBuffer_append(res->outputbuffer,
                                                                     "  %-33s %d\n",
                                                                     "children", s->inf->priv.process.children);
@@ -2700,30 +2766,30 @@ static void status_service_txt(Service_T s, HttpResponse res, Level_Type level) 
                                                             "ping response time");
                                 else
                                         StringBuffer_append(res->outputbuffer,
-                                                            "  %-33s %.3fs\n",
-                                                            "ping response time", i->response);
+                                                            "  %-33s %.3fms\n",
+                                                            "ping response time", i->response * 1000.);
                         }
                         for (Port_T p = s->portlist; p; p = p->next) {
                                 if (p->is_available)
                                         StringBuffer_append(res->outputbuffer,
-                                                    "  %-33s %.3fs to [%s]:%d%s type %s/%s protocol %s\n",
-                                                    "port response time", p->response, p->hostname, p->port, p->request ? p->request : "", Util_portTypeDescription(p), Util_portIpDescription(p), p->protocol->name);
+                                                    "  %-33s %.3fs to [%s]:%d%s type %s/%s %sprotocol %s\n",
+                                                    "port response time", p->response, p->hostname, p->target.net.port, Util_portRequestDescription(p), Util_portTypeDescription(p), Util_portIpDescription(p), p->target.net.ssl.use_ssl ? "using SSL/TLS " : "", p->protocol->name);
                                 else
                                         StringBuffer_append(res->outputbuffer,
-                                                    "  %-33s FAILED to [%s]:%d%s type %s/%s protocol %s\n",
-                                                    "port response time", p->hostname, p->port, p->request ? p->request : "", Util_portTypeDescription(p), Util_portIpDescription(p), p->protocol->name);
+                                                    "  %-33s FAILED to [%s]:%d%s type %s/%s %sprotocol %s\n",
+                                                    "port response time", p->hostname, p->target.net.port, Util_portRequestDescription(p), Util_portTypeDescription(p), Util_portIpDescription(p), p->target.net.ssl.use_ssl ? "using SSL/TLS " : "", p->protocol->name);
                         }
                         for (Port_T p = s->socketlist; p; p = p->next) {
                                 if (p->is_available)
                                         StringBuffer_append(res->outputbuffer,
                                                     "  %-33s %.3fs to %s type %s protocol %s\n",
-                                                    "unix socket response time", p->response, p->pathname, Util_portTypeDescription(p), p->protocol->name);
+                                                    "unix socket response time", p->response, p->target.unix.pathname, Util_portTypeDescription(p), p->protocol->name);
                                 else
                                         StringBuffer_append(res->outputbuffer,
                                                     "  %-33s FAILED to %s type %s protocol %s\n",
-                                                    "unix socket response time", p->pathname, Util_portTypeDescription(p), p->protocol->name);
+                                                    "unix socket response time", p->target.unix.pathname, Util_portTypeDescription(p), p->protocol->name);
                         }
-                        if (s->type == Service_System && Run.doprocess) {
+                        if (s->type == Service_System && (Run.flags & Run_ProcessEngineEnabled)) {
                                 StringBuffer_append(res->outputbuffer,
                                                     "  %-33s [%.2f] [%.2f] [%.2f]\n"
                                                     "  %-33s %.1f%%us %.1f%%sy"
@@ -2797,8 +2863,7 @@ static char *get_service_status(Service_T s, char *buf, int buflen) {
                 }
         }
         if (s->doaction)
-                snprintf(buf + strlen(buf), buflen - strlen(buf), " - %s pending", actionnames[s->doaction]);
-
+                snprintf(buf + strlen(buf), buflen - strlen(buf) - 1, " - %s pending", actionnames[s->doaction]);
         return buf;
 }
 

@@ -45,9 +45,9 @@ typedef struct T *T;
 
 
 /*
- * The list of all ciphers suites in order of strength except those containing anonymous DH ciphers, low  bit-size ciphers, export-crippled ciphers or the MD5 hash algorithm
+ * The list of all ciphers suites in order of strength except those containing anonymous DH ciphers, low bit-size ciphers, export-crippled ciphersm the MD5 hash algorithm and weak DES and RC4 ciphers.
  */
-#define CIPHER_LIST "ALL:!ADH:!LOW:!EXP:!MD5:@STRENGTH"
+#define CIPHER_LIST "ALL:!DES:!RC4:!aNULL:!LOW:!EXP:!IDEA:!MD5:@STRENGTH"
 
 
 /**
@@ -77,37 +77,44 @@ void Ssl_setFipsMode(boolean_t enabled);
 
 /**
  * Create a new SSL connection object
+ * @param version An SSL version to use
+ * @param CACertificateFile Optional path to CA certificates PEM encoded file
+ * @param CACertificatePath Optional path to CA certificates directory
+ * @param clientpem Optional path to client certificate PEM file
  * @return a new SSL connection object or NULL if failed
  */
-T Ssl_new(char *clientpemfile, Ssl_Version version);
+T Ssl_new(Ssl_Version version, const char *CACertificateFile, const char *CACertificatePath, const char *clientpem);
 
 
 /**
  * Free an SSL connection object
- * @param C A reference to SSL connection object 
+ * @param C A reference to SSL connection object
  */
 void Ssl_free(T *C);
 
 
 /**
- * Connect a socket using SSL
- * @param C An SSL connection object 
+ * Connect a socket using SSL. If name is set and TLS is used,
+ * the Server Name Indication (SNI) TLS extension is enabled.
+ * @param C An SSL connection object
  * @param socket A socket
- * @return true if succeeded or false if failed
+ * @param timeout Milliseconds to wait for connection to be established
+ * @param name A server name string (optional)
+ * @exception IOException or AssertException if failed
  */
-boolean_t Ssl_connect(T C, int socket);
+void Ssl_connect(T C, int socket, int timeout, const char *name);
 
 
 /**
  * Close an SSL connection
- * @param C An SSL connection object 
+ * @param C An SSL connection object
  */
 void Ssl_close(T C);
 
 
 /**
  * Write <code>size</code> bytes from <code>b</code> to an encrypted channel
- * @param C An SSL connection object 
+ * @param C An SSL connection object
  * @param b The data to be written
  * @param size Number of bytes in b
  * @param timeout Milliseconds to wait for data to be written
@@ -118,7 +125,7 @@ int Ssl_write(T C, void *b, int size, int timeout);
 
 /**
  * Read <code>size</code> bytes to <code>b</code> from an encrypted channel
- * @param C An SSL connection object 
+ * @param C An SSL connection object
  * @param b A byte buffer
  * @param size The size of the buffer b
  * @param timeout Milliseconds to wait for data to be read
@@ -128,12 +135,46 @@ int Ssl_read(T C, void *b, int size, int timeout);
 
 
 /**
- * Compare a peer certificate with a given MD5 checksum
- * @param C An SSL connection object 
- * @param md5sum Expected MD5 checksum in string format
- * @return true if succeeded or false if failed
+ * Set whether SSL server certificates should be verified.
+ * @param C An SSL connection object
+ * @param verify Boolean flag (true = verify, false = don't verify)
  */
-boolean_t Ssl_checkCertificate(T C, char *md5sum);
+void Ssl_setVerifyCertificates(T C, boolean_t verify);
+
+
+/**
+ * Set whether self-signed certificates should be allowed (rejected by default)
+ * @param C An SSL connection object
+ * @param allow Boolean flag (true = allow, false = reject)
+ */
+void Ssl_setAllowSelfSignedCertificates(T C, boolean_t allow);
+
+
+/**
+ * Set minimum days the certificate must be valid.
+ * @param C An SSL connection object
+ * @param days Minimum number of valid days
+ */
+void Ssl_setCertificateMinimumValidDays(T C, int days);
+
+
+/**
+ * Check a peer certificate with a given checksum
+ * @param C An SSL connection object
+ * @param checksum Expected checksum in string format
+ * @param type Checksum type
+ */
+void Ssl_setCertificateChecksum(T C, short type, const char *checksum);
+
+
+/**
+ * Print SSL options string representation to the given buffer.
+ * @param options SSL options object
+ * @param b A string buffer
+ * @param size The size of the buffer b
+ * @return Buffer with string represantation of SSL options
+ */
+char *Ssl_printOptions(SslOptions_T *options, char *b, int size);
 
 
 #undef T

@@ -1,16 +1,18 @@
 Name: monit
 Summary: Process monitor and restart utility
-Version: 5.12.2
+Version: 6.0
 Release: 1
 URL: http://mmonit.com/monit/
 Source: http://mmonit.com/monit/dist/%{name}-%{version}.tar.gz
 Group: Utilities/Console
 BuildRoot: %{_tmppath}/%{name}-buildroot
 License: AGPL
-BuildRequires: flex
-BuildRequires: bison
-BuildRequires: openssl-devel
-BuildRequires: pam-devel
+
+%{!?_with_ssl: %{!?_without_ssl: %define _with_ssl --with-ssl}}
+%{?_with_ssl:BuildRequires: openssl-devel}
+
+%{!?_with_pam: %{!?_without_pam: %define _with_pam --with-pam}}
+%{?_with_pam:BuildRequires: pam-devel}
 
 %description
 Monit is a utility for managing and monitoring processes,
@@ -22,7 +24,11 @@ actions in error situations.
 %setup
 
 %build
-%configure
+%configure \
+        %{?_with_ssl} \
+        %{?_without_ssl} \
+        %{?_with_pam} \
+        %{?_without_pam}
 make %{?_smp_mflags}
 
 %install
@@ -55,12 +61,27 @@ fi
 %files
 %defattr(-,root,root)
 %doc COPYING README
-%config /etc/monitrc
+%config(noreplace) /etc/monitrc
 %config /etc/init.d/%{name}
 %{_bindir}/%{name}
 %{_mandir}/man1/%{name}.1.gz
 
 %changelog
+* Thu Oct 22 2015 Martin Pala <martinp@tildeslash.com>
+- Upgraded to monit-6.0
+
+* Mon Oct 12 2015 Martin Pala <martinp@tildeslash.com>
+- Upgraded to monit-5.15
+- Added rpmbuild options for building without PAM (--without pam)
+- Added rpmbuild options for building without SSL (--without ssl)
+- Dropped build dependency on flex and bison
+
+* Mon Jun 08 2015 Martin Pala <martinp@tildeslash.com>
+- Upgraded to monit-5.14
+
+* Mon Mar 23 2015 Martin Pala <martinp@tildeslash.com>
+- Upgraded to monit-5.13
+
 * Tue Mar 10 2015 Martin Pala <martinp@tildeslash.com>
 - Upgraded to monit-5.12.2
 

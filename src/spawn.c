@@ -158,7 +158,8 @@ void spawn(Service_T S, command_t C, Event_T E) {
         pid = fork();
         if (pid < 0) {
                 LogError("Cannot fork a new process -- %s\n", STRERROR);
-                exit(1);
+                pthread_sigmask(SIG_SETMASK, &save, NULL);
+                return;
         }
 
         if (pid == 0) {
@@ -179,7 +180,7 @@ void spawn(Service_T S, command_t C, Event_T E) {
 
                 set_monit_environment(S, C, E, date);
 
-                if (! Run.isdaemon) {
+                if (! (Run.flags & Run_Daemon)) {
                         for (int i = 0; i < 3; i++)
                                 if (close(i) == -1 || open("/dev/null", O_RDWR) != i)
                                         stat_loc |= redirect_ERROR;

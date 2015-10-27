@@ -120,11 +120,11 @@ boolean_t kill_daemon(int sig) {
         pid_t pid;
         if ((pid = exist_daemon()) > 0) {
                 if (kill(pid, sig) < 0) {
-                        LogError("Cannot send signal to daemon process -- %s\n", STRERROR);
+                        LogError("Cannot signal the Monit daemon process -- %s\n", STRERROR);
                         return false;
                 }
         } else {
-                LogInfo("No daemon process found\n");
+                LogInfo("Monit daemon is not running\n");
                 return true;
         }
         if (sig == SIGTERM) {
@@ -142,7 +142,7 @@ boolean_t kill_daemon(int sig) {
 int exist_daemon() {
         errno = 0;
         pid_t pid;
-        if ((pid = Util_getPid(Run.pidfile)) && (getpgid(pid) > -1 || errno == EPERM))
+        if ((pid = Util_getPid(Run.files.pid)) && (getpgid(pid) > -1 || errno == EPERM))
                 return (int)pid;
         return 0;
 }

@@ -93,20 +93,6 @@ typedef struct response {
 } *HttpResponse;
 
 
-struct  ServiceImpl {
-        void(*doGet)(HttpRequest, HttpResponse);
-        void(*doPost)(HttpRequest, HttpResponse);
-};
-
-
-/*
- * An object for implementors of the service functions; doGet and
- * doPost. Implementing modules i.e. CERVLETS, must implement the
- * doGet and doPost functions and the engine will call the add_Impl
- * function to setup the callback to these functions.
- */
-struct ServiceImpl Impl;
-
 /* Public prototypes */
 void *http_processor(Socket_T);
 char *get_headers(HttpResponse res);
@@ -116,7 +102,7 @@ void add_Impl(void(*doGet)(HttpRequest, HttpResponse), void(*doPost)(HttpRequest
 void set_content_type(HttpResponse res, const char *mime);
 const char *get_header(HttpRequest req, const char *header_name);
 void escapeHTML(StringBuffer_T sb, const char *s);
-void send_error(HttpResponse, int status, const char *message, ...);
+void send_error(HttpRequest, HttpResponse, int status, const char *message, ...);
 const char *get_parameter(HttpRequest req, const char *parameter_name);
 void set_header(HttpResponse res, const char *name, const char *value);
 

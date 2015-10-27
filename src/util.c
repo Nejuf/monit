@@ -118,6 +118,7 @@
 #include "process.h"
 #include "event.h"
 #include "state.h"
+#include "protocol.h"
 
 // libmonit
 #include "io/File.h"
@@ -712,8 +713,8 @@ boolean_t Util_getChecksum(char *file, Hash_Type hashtype, char *buf, int bufsiz
 void Util_hmacMD5(const unsigned char *data, int datalen, const unsigned char *key, int keylen, unsigned char *digest) {
         md5_context_t ctx;
         md5_init(&ctx);
-        unsigned char k_ipad[65];
-        unsigned char k_opad[65];
+        unsigned char k_ipad[65] = {};
+        unsigned char k_opad[65] = {};
         unsigned char tk[16];
         int i;
 
@@ -726,8 +727,6 @@ void Util_hmacMD5(const unsigned char *data, int datalen, const unsigned char *k
                 keylen = 16;
         }
 
-        memset(k_ipad, 0, sizeof(k_ipad));
-        memset(k_opad, 0, sizeof(k_opad));
         memcpy(k_ipad, key, keylen);
         memcpy(k_opad, key, keylen);
 
@@ -779,16 +778,16 @@ boolean_t Util_existService(const char *name) {
 
 void Util_printRunList() {
         printf("Runtime constants:\n");
-        printf(" %-18s = %s\n", "Control file", is_str_defined(Run.controlfile));
-        printf(" %-18s = %s\n", "Log file", is_str_defined(Run.logfile));
-        printf(" %-18s = %s\n", "Pid file", is_str_defined(Run.pidfile));
-        printf(" %-18s = %s\n", "Id file", is_str_defined(Run.idfile));
-        printf(" %-18s = %s\n", "State file", is_str_defined(Run.statefile));
+        printf(" %-18s = %s\n", "Control file", is_str_defined(Run.files.control));
+        printf(" %-18s = %s\n", "Log file", is_str_defined(Run.files.log));
+        printf(" %-18s = %s\n", "Pid file", is_str_defined(Run.files.pid));
+        printf(" %-18s = %s\n", "Id file", is_str_defined(Run.files.id));
+        printf(" %-18s = %s\n", "State file", is_str_defined(Run.files.state));
         printf(" %-18s = %s\n", "Debug", Run.debug ? "True" : "False");
-        printf(" %-18s = %s\n", "Log", Run.dolog ? "True" : "False");
-        printf(" %-18s = %s\n", "Use syslog", Run.use_syslog ? "True" : "False");
-        printf(" %-18s = %s\n", "Is Daemon", Run.isdaemon ? "True" : "False");
-        printf(" %-18s = %s\n", "Use process engine", Run.doprocess ? "True" : "False");
+        printf(" %-18s = %s\n", "Log", (Run.flags & Run_Log) ? "True" : "False");
+        printf(" %-18s = %s\n", "Use syslog", (Run.flags & Run_UseSyslog) ? "True" : "False");
+        printf(" %-18s = %s\n", "Is Daemon", (Run.flags & Run_Daemon) ? "True" : "False");
+        printf(" %-18s = %s\n", "Use process engine", (Run.flags & Run_ProcessEngineEnabled) ? "True" : "False");
         printf(" %-18s = %d seconds with start delay %d seconds\n", "Poll time", Run.polltime, Run.startdelay);
         printf(" %-18s = %d bytes\n", "Expect buffer", Run.expectbuffer);
 
@@ -803,22 +802,34 @@ void Util_printRunList() {
                 printf(" %-18s = base directory %s with %s slots\n",
                        "Event queue", Run.eventlist_dir, slots);
         }
-
+#ifdef HAVE_OPENSSL
+        {
+                const char *options = Ssl_printOptions(&(Run.ssl), (char[STRLEN]){}, STRLEN);
+                if (options && *options)
+                        printf(" %-18s = %s\n", "SSL options", options);
+        }
+#endif
         if (Run.mmonits) {
                 Mmonit_T c;
                 printf(" %-18s = ", "M/Monit(s)");
                 for (c = Run.mmonits; c; c = c->next) {
-                        printf("%s with timeout %d seconds%s%s%s%s%s%s",
-                               c->url->url,
-                               c->timeout / 1000,
-                               (c->ssl.use_ssl && c->ssl.version) ? " ssl version " : "",
-                               (c->ssl.use_ssl && c->ssl.version) ? sslnames[c->ssl.version] : "",
-                               c->ssl.certmd5 ? " server cert md5 sum " : "",
-                               c->ssl.certmd5 ? c->ssl.certmd5 : "",
-                               c->url->user ? " using credentials" : "",
-                               c->next ? ",\n                    = " : "");
+                        printf("%s with timeout %.0f seconds", c->url->url, c->timeout / 1000.);
+#ifdef HAVE_OPENSSL
+                        if (c->ssl.use_ssl) {
+                                printf(" using SSL/TLS");
+                                const char *options = Ssl_printOptions(&c->ssl, (char[STRLEN]){}, STRLEN);
+                                if (options && *options)
+                                        printf(" with options {%s}", options);
+                                if (c->ssl.checksum)
+                                        printf(" and certificate checksum %s equal to '%s'", checksumnames[c->ssl.checksumType], c->ssl.checksum);
+                        }
+#endif
+                        if (c->url->user)
+                                printf(" using credentials");
+                        if (c->next)
+                               printf(",\n                    = ");
                 }
-                if (! Run.dommonitcredentials)
+                if (! (Run.flags & Run_MmonitCredentials))
                         printf("\n                      register without credentials");
                 printf("\n");
         }
@@ -826,13 +837,22 @@ void Util_printRunList() {
         if (Run.mailservers) {
                 MailServer_T mta;
                 printf(" %-18s = ", "Mail server(s)");
-                for (mta = Run.mailservers; mta; mta = mta->next)
-                        printf("%s:%d%s%s",
-                               mta->host,
-                               mta->port,
-                               mta->ssl.use_ssl ? "(ssl)" : "",
-                               mta->next ? ", " : " ");
-                printf("with timeout %d seconds", Run.mailserver_timeout / 1000);
+                for (mta = Run.mailservers; mta; mta = mta->next) {
+                        printf("%s:%d", mta->host, mta->port);
+#ifdef HAVE_OPENSSL
+                        if (mta->ssl.use_ssl) {
+                                printf(" using SSL/TLS");
+                                const char *options = Ssl_printOptions(&mta->ssl, (char[STRLEN]){}, STRLEN);
+                                if (options && *options)
+                                        printf(" with options {%s}", options);
+                                if (mta->ssl.checksum)
+                                        printf(" and certificate checksum %s equal to '%s'", checksumnames[mta->ssl.checksumType], mta->ssl.checksum);
+                        }
+#endif
+                        if (mta->next)
+                                printf(", ");
+                }
+                printf(" with timeout %.0f seconds", Run.mailserver_timeout / 1000.);
                 if (Run.mail_hostname)
                         printf(" using '%s' as my hostname", Run.mail_hostname);
                 printf("\n");
@@ -857,10 +877,10 @@ void Util_printRunList() {
                 }
                 printf(" %-18s = %s\n", "httpd signature", Run.httpd.flags & Httpd_Signature ? "Enabled" : "Disabled");
                 if (Run.httpd.flags & Httpd_Ssl) {
-                        printf(" %-18s = %s\n", "PEM key/cert file", Run.httpd.socket.net.ssl.pem);
+                        printf(" %-18s = %s\n", "httpd PEM file", Run.httpd.socket.net.ssl.pem);
                         if (Run.httpd.socket.net.ssl.clientpem)
                                 printf(" %-18s = %s\n", "Client cert file", Run.httpd.socket.net.ssl.clientpem);
-                        printf(" %-18s = %s\n", "Allow self certs", (Run.httpd.flags & Httpd_AllowSelfSignedCertificates) ? "True" : "False");
+                        printf(" %-18s = %s\n", "httpd allow self cert", (Run.httpd.flags & Httpd_AllowSelfSignedCertificates) ? "True" : "False");
                 }
 
                 printf(" %-18s = %s\n", "httpd auth. style",
@@ -892,13 +912,14 @@ void Util_printService(Service_T s) {
         printf("%-21s = %s\n", StringBuffer_toString(StringBuffer_append(buf, "%s Name", servicetypes[s->type])), s->name);
 
         for (ServiceGroup_T o = servicegrouplist; o; o = o->next) {
-                for (ServiceGroupMember_T om = o->members; om; om = om->next) {
-                        if (IS(om->name, s->name)) {
+                for (list_t m = o->members->head; m; m = m->next) {
+                        if (m->e == s) {
                                 if (! sgheader) {
                                         printf(" %-20s = %s", "Group", o->name);
                                         sgheader = true;
-                                } else
+                                } else {
                                         printf(", %s", o->name);
+                                }
                         }
                 }
         }
@@ -1032,33 +1053,46 @@ void Util_printService(Service_T s) {
                 StringBuffer_clear(buf);
                 switch (o->family) {
                         case Socket_Ip4:
-                                printf(" %-20s = %s\n", "Ping4", StringBuffer_toString(Util_printRule(buf, o->action, "if failed count %d with timeout %d seconds", o->count, o->timeout / 1000)));
+                                printf(" %-20s = %s\n", "Ping4", StringBuffer_toString(Util_printRule(buf, o->action, "if failed count %d size %d with timeout %.0f seconds", o->count, o->size, o->timeout / 1000.)));
                                 break;
                         case Socket_Ip6:
-                                printf(" %-20s = %s\n", "Ping6", StringBuffer_toString(Util_printRule(buf, o->action, "if failed count %d with timeout %d seconds", o->count, o->timeout / 1000)));
+                                printf(" %-20s = %s\n", "Ping6", StringBuffer_toString(Util_printRule(buf, o->action, "if failed count %d size %d with timeout %.0f seconds", o->count, o->size, o->timeout / 1000.)));
                                 break;
                         default:
-                                printf(" %-20s = %s\n", "Ping", StringBuffer_toString(Util_printRule(buf, o->action, "if failed count %d with timeout %d seconds", o->count, o->timeout / 1000)));
+                                printf(" %-20s = %s\n", "Ping", StringBuffer_toString(Util_printRule(buf, o->action, "if failed count %d size %d with timeout %.0f seconds", o->count, o->size, o->timeout / 1000.)));
                                 break;
                 }
         }
 
         for (Port_T o = s->portlist; o; o = o->next) {
-                StringBuffer_clear(buf);
+                StringBuffer_T buf2 = StringBuffer_create(64);
+                StringBuffer_append(buf2, "if failed [%s]:%d%s type %s/%s protocol %s with timeout %.0f seconds",
+                        o->hostname, o->target.net.port, Util_portRequestDescription(o), Util_portTypeDescription(o), Util_portIpDescription(o), o->protocol->name, o->timeout / 1000.);
                 if (o->retry > 1)
-                        printf(" %-20s = %s\n", "Port", StringBuffer_toString(Util_printRule(buf, o->action, "if failed [%s]:%d%s type %s/%s protocol %s with timeout %d seconds and retry %d times", o->hostname, o->port, o->request ? o->request : "", Util_portTypeDescription(o), Util_portIpDescription(o), o->protocol->name, o->timeout / 1000, o->retry)));
-                else
-                        printf(" %-20s = %s\n", "Port", StringBuffer_toString(Util_printRule(buf, o->action, "if failed [%s]:%d%s type %s/%s protocol %s with timeout %d seconds", o->hostname, o->port, o->request ? o->request : "", Util_portTypeDescription(o), Util_portIpDescription(o), o->protocol->name, o->timeout / 1000)));
-                if (o->SSL.certmd5 != NULL)
-                        printf(" %-20s = %s\n", "Server cert md5 sum", o->SSL.certmd5);
+                        StringBuffer_append(buf2, " and retry %d times", o->retry);
+#ifdef HAVE_OPENSSL
+                if (o->target.net.ssl.use_ssl) {
+                        StringBuffer_append(buf2, " using SSL/TLS");
+                        const char *options = Ssl_printOptions(&o->target.net.ssl, (char[STRLEN]){}, STRLEN);
+                        if (options && *options)
+                                StringBuffer_append(buf2, " with options {%s}", options);
+                        if (o->target.net.ssl.minimumValidDays > 0)
+                                StringBuffer_append(buf2, " and certificate expires in more than %d days", o->target.net.ssl.minimumValidDays);
+                        if (o->target.net.ssl.checksum)
+                                StringBuffer_append(buf2, " and certificate checksum %s equal to '%s'", checksumnames[o->target.net.ssl.checksumType], o->target.net.ssl.checksum);
+                }
+#endif
+                StringBuffer_clear(buf);
+                printf(" %-20s = %s\n", "Port", StringBuffer_toString(Util_printRule(buf, o->action, StringBuffer_toString(buf2))));
+                StringBuffer_free(&buf2);
         }
 
         for (Port_T o = s->socketlist; o; o = o->next) {
                 StringBuffer_clear(buf);
                 if (o->retry > 1)
-                        printf(" %-20s = %s\n", "Unix Socket", StringBuffer_toString(Util_printRule(buf, o->action, "if failed %s type %s protocol %s with timeout %d seconds and retry %d times", o->pathname, Util_portTypeDescription(o), o->protocol->name, o->timeout / 1000, o->retry)));
+                        printf(" %-20s = %s\n", "Unix Socket", StringBuffer_toString(Util_printRule(buf, o->action, "if failed %s type %s protocol %s with timeout %.0f seconds and retry %d times", o->target.unix.pathname, Util_portTypeDescription(o), o->protocol->name, o->timeout / 1000., o->retry)));
                 else
-                        printf(" %-20s = %s\n", "Unix Socket", StringBuffer_toString(Util_printRule(buf, o->action, "if failed %s type %s protocol %s with timeout %d seconds", o->pathname, Util_portTypeDescription(o), o->protocol->name, o->timeout / 1000, o->retry)));
+                        printf(" %-20s = %s\n", "Unix Socket", StringBuffer_toString(Util_printRule(buf, o->action, "if failed %s type %s protocol %s with timeout %.0f seconds", o->target.unix.pathname, Util_portTypeDescription(o), o->protocol->name, o->timeout / 1000., o->retry)));
         }
 
         for (Timestamp_T o = s->timestamplist; o; o = o->next) {
@@ -1160,6 +1194,14 @@ void Util_printService(Service_T s) {
                                :
                                StringBuffer_toString(Util_printRule(buf, o->action, "if %s %.1f%%", operatornames[o->operator], o->limit_percent / 10.))
                                );
+                } else if (o->resource == Resource_InodeFree) {
+                        printf(" %-20s = %s\n", "Inodes free limit",
+                               o->limit_absolute > -1
+                               ?
+                               StringBuffer_toString(Util_printRule(buf, o->action, "if %s %lld", operatornames[o->operator], o->limit_absolute))
+                               :
+                               StringBuffer_toString(Util_printRule(buf, o->action, "if %s %.1f%%", operatornames[o->operator], o->limit_percent / 10.))
+                               );
                 } else if (o->resource == Resource_Space) {
                         if (o->limit_absolute > -1) {
                                if (s->inf->priv.filesystem.f_bsize > 0)
@@ -1168,6 +1210,15 @@ void Util_printService(Service_T s) {
                                        printf(" %-20s = %s\n", "Space usage limit", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %lld blocks", operatornames[o->operator], o->limit_absolute)));
                         } else {
                                printf(" %-20s = %s\n", "Space usage limit", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %.1f%%", operatornames[o->operator], o->limit_percent / 10.)));
+                        }
+                } else if (o->resource == Resource_SpaceFree) {
+                        if (o->limit_absolute > -1) {
+                               if (s->inf->priv.filesystem.f_bsize > 0)
+                                       printf(" %-20s = %s\n", "Space free limit", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %s", operatornames[o->operator], Str_bytesToSize(o->limit_absolute * s->inf->priv.filesystem.f_bsize, buffer))));
+                                else
+                                       printf(" %-20s = %s\n", "Space free limit", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %lld blocks", operatornames[o->operator], o->limit_absolute)));
+                        } else {
+                               printf(" %-20s = %s\n", "Space free limit", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %.1f%%", operatornames[o->operator], o->limit_percent / 10.)));
                         }
                 }
         }
@@ -1328,11 +1379,11 @@ char *Util_monitId(char *idfile) {
                 /* Generate the unique id */
                 snprintf(buf, STRLEN, "%lu%d%lu", (unsigned long)Time_now(), getpid(), random());
                 md5_init(&ctx);
-                md5_append(&ctx, (const md5_byte_t *)buf, (int)strlen(buf));
+                md5_append(&ctx, (const md5_byte_t *)buf, STRLEN - 1);
                 md5_finish(&ctx, (md5_byte_t *)digest);
                 Util_digest2Bytes((unsigned char *)digest, 16, Run.id);
                 fprintf(file, "%s", Run.id);
-                LogInfo("Generated unique Monit id %s and stored to '%s'\n", Run.id, idfile);
+                LogInfo(" New Monit id: %s\n Stored in '%s'\n", Run.id, idfile);
         } else {
                 if (! File_isFile(idfile)) {
                         LogError("idfile '%s' is not a regular file\n", idfile);
@@ -1401,7 +1452,7 @@ int Util_isProcessRunning(Service_T s, boolean_t refresh) {
                 /* The process table read may sporadically fail during read, because we're using glob on some platforms which may fail if the proc filesystem
                  * which it traverses is changed during glob (process stopped). Note that the glob failure is rare and temporary - it will be OK on next cycle.
                  * We skip the process matching that cycle however because we don't have process informations - will retry next cycle */
-                if (Run.doprocess) {
+                if (Run.flags & Run_ProcessEngineEnabled) {
                         for (int i = 0; i < ptreesize; i++) {
                                 boolean_t found = false;
                                 if (ptree[i].cmdline) {
@@ -1914,7 +1965,7 @@ const char *Util_portIpDescription(Port_T p) {
 const char *Util_portTypeDescription(Port_T p) {
         switch (p->type) {
                 case Socket_Tcp:
-                        return p->SSL.use_ssl ? "TCPSSL" : "TCP";
+                        return "TCP";
                 case Socket_Udp:
                         return "UDP";
                 default:
@@ -1923,13 +1974,24 @@ const char *Util_portTypeDescription(Port_T p) {
 }
 
 
+const char *Util_portRequestDescription(Port_T p) {
+        char *request = "";
+        if (p->protocol->check == check_http && p->parameters.http.request)
+                request = p->parameters.http.request;
+        else if (p->protocol->check == check_websocket && p->parameters.websocket.request)
+                request = p->parameters.websocket.request;
+        return request;
+}
+
+
 char *Util_portDescription(Port_T p, char *buf, int bufsize) {
-        if (p->family == Socket_Ip || p->family == Socket_Ip4 || p->family == Socket_Ip6)
-                snprintf(buf, STRLEN, "[%s]:%d%s [%s/%s]", p->hostname, p->port, p->request ? p->request : "", Util_portTypeDescription(p), Util_portIpDescription(p));
-        else if (p->family == Socket_Unix)
-                snprintf(buf, STRLEN, "%s", p->pathname);
-        else
+        if (p->family == Socket_Ip || p->family == Socket_Ip4 || p->family == Socket_Ip6) {
+                snprintf(buf, STRLEN, "[%s]:%d%s [%s/%s%s]", p->hostname, p->target.net.port, Util_portRequestDescription(p), Util_portTypeDescription(p), Util_portIpDescription(p), p->target.net.ssl.use_ssl ? " SSL" : "");
+        } else if (p->family == Socket_Unix) {
+                snprintf(buf, STRLEN, "%s", p->target.unix.pathname);
+        } else {
                 *buf = 0;
+        }
         return buf;
 }
 

@@ -64,16 +64,16 @@
 /* ----------------------------------------------------------------- Private */
 
 
-static const char *_findHostHeaderIn(List_T list) {
+static boolean_t _hasHeader(List_T list, const char *name) {
         if (list) {
                 for (list_t h = list->head; h; h = h->next) {
                         char *header = h->e;
-                        if (Str_startsWith(header, "Host")) {
-                                return strchr(header, ':') + 1;
-                        }
+                        if ((strncmp(header, name, strlen(name)) == 0))
+                                if (header[strlen(name)] == ':') // Ensure that name is not just a prefix
+                                        return true;
                 }
         }
-        return NULL;
+        return false;
 }
 
 
@@ -199,7 +199,7 @@ static void check_request(Socket_T socket, Port_T P) {
         Str_chomp(buf);
         if (! sscanf(buf, "%*s %d", &status))
                 THROW(IOException, "HTTP error: Cannot parse HTTP status in response: %s", buf);
-        if (! Util_evalQExpression(P->operator, status, P->status))
+        if (! Util_evalQExpression(P->parameters.http.operator, status, P->parameters.http.status ? P->parameters.http.status : 400))
                 THROW(IOException, "HTTP error: Server returned status %d", status);
         /* Get Content-Length header value */
         while (Socket_readLine(socket, buf, sizeof(buf))) {
@@ -213,10 +213,19 @@ static void check_request(Socket_T socket, Port_T P) {
                                 THROW(IOException, "HTTP error: Illegal Content-Length response header '%s'", buf);
                 }
         }
+        /* FIXME:
+         * we read the data from the socket inside do_regex() and also check_request_checksum() independently => these two cannot be used together - only one wil read the data. Refactor the spaghetti code and consolidate the read
+         * function, so data are ready before we test the content (read once, allow to apply different tests / many times) */
+        /* FIXME:
+         * We don't support chuncked transfer encoding and rely on Content-Length only ... this has two problems:
+         * 1.) we read chunk headers to buffer as part of data and apply checksum test and regex test to it => technically wrong, as the pattern we're looking for may be split in different chunks and won't match, checksum completyly wrong
+         * 2.) the read of chunked data is slowed downed by read delay (https://bitbucket.org/tildeslash/monit/issues/254/hosts-check-is-too-long)
+         * I.e. implement support for Chunked encoding (see above FIXME comment - we should have one read function, which can be used to read data and reuse it for all tests)
+         */
         if (P->url_request && P->url_request->regex)
                 do_regex(socket, content_length, P->url_request);
-        if (P->request_checksum)
-                check_request_checksum(socket, content_length, P->request_checksum, P->request_hashtype);
+        if (P->parameters.http.checksum)
+                check_request_checksum(socket, content_length, P->parameters.http.checksum, P->parameters.http.hashtype);
 }
 
 
@@ -252,38 +261,28 @@ static char *get_auth_header(Port_T P, char *auth, int l) {
 
 
 void check_http(Socket_T socket) {
-        Port_T P;
-        char host[STRLEN];
-        char auth[STRLEN] = {};
-        const char *request = NULL;
-        const char *hostheader = NULL;
 
         ASSERT(socket);
 
-        P = Socket_getPort(socket);
-
+        Port_T P = Socket_getPort(socket);
         ASSERT(P);
 
-        request = P->request ? P->request : "/";
-
-        hostheader = _findHostHeaderIn(P->http_headers);
-        hostheader = hostheader ? hostheader : P->request_hostheader
-        ? P->request_hostheader : Util_getHTTPHostHeader(socket, host, STRLEN); // Otherwise use deprecated request_hostheader or default host
         StringBuffer_T sb = StringBuffer_create(168);
         StringBuffer_append(sb,
                             "GET %s HTTP/1.1\r\n"
-                            "Host: %s\r\n"
                             "Accept: */*\r\n"
-                            "User-Agent: Monit/%s\r\n"
+                            "Connection: close\r\n"
                             "%s",
-                            request, hostheader, VERSION,
-                            get_auth_header(P, auth, STRLEN));
+                            P->parameters.http.request ? P->parameters.http.request : "/",
+                            get_auth_header(P, (char[STRLEN]){0}, STRLEN));
+        if (! _hasHeader(P->parameters.http.headers, "Host"))
+                StringBuffer_append(sb, "Host: %s\r\n", Util_getHTTPHostHeader(socket, (char[STRLEN]){}, STRLEN));
+        if (! _hasHeader(P->parameters.http.headers, "User-Agent"))
+                StringBuffer_append(sb, "User-Agent: Monit/%s\r\n", VERSION);
         // Add headers if we have them
-        if (P->http_headers) {
-                for (list_t p = P->http_headers->head; p; p = p->next) {
+        if (P->parameters.http.headers) {
+                for (list_t p = P->parameters.http.headers->head; p; p = p->next) {
                         char *header = p->e;
-                        if (Str_startsWith(header, "Host")) // Already set contrived above
-                                continue;
                         StringBuffer_append(sb, "%s\r\n", header);
                 }
         }
